@@ -220,6 +220,70 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(self.postit.options.verso, "sentences")
         self.assertEqual(self.postit.face, "verso")
 
+    def _vocabulary_regions(self):
+        wanted = {w.text for w in self.postit.card.vocabulary}
+        return [r for r in self.postit._regions if r.text in wanted]
+
+    def test_vocabulary_uses_two_columns_on_a_small_note(self):
+        """The meaning follows its word, which leaves room for a column."""
+        self.postit.options.verso = "vocabulary"
+        self.postit.face = "verso"
+        self.postit.win.geometry("210x230")  # the smallest a note can be
+        self.postit.win.update()
+        self.postit.redraw()
+
+        rows: dict[int, list[float]] = {}
+        for region in self._vocabulary_regions():
+            x0, y0, _x1, _y1 = region.boxes[0]
+            rows.setdefault(round(y0), []).append(x0)
+        self.assertTrue(rows, "no vocabulary was drawn")
+        widest = max(len(xs) for xs in rows.values())
+        self.assertGreaterEqual(widest, 2, "expected two words side by side")
+        self.assertGreaterEqual(len(self._vocabulary_regions()), 6)
+
+    def test_a_bigger_note_shows_more_words(self):
+        self.postit.options.verso = "vocabulary"
+        self.postit.face = "verso"
+        self.postit.win.geometry("210x230")
+        self.postit.win.update()
+        self.postit.redraw()
+        small = len(self._vocabulary_regions())
+        self.postit.win.geometry("420x480")
+        self.postit.win.update()
+        self.postit.redraw()
+        self.assertGreater(len(self._vocabulary_regions()), small)
+
+    def test_shortened_meanings_can_be_read_in_the_bubble(self):
+        """Narrow columns cut long meanings; hovering shows the whole thing."""
+        self.postit.options.verso = "vocabulary"
+        self.postit.face = "verso"
+        self.postit.win.geometry("210x230")
+        self.postit.win.update()
+        self.postit.redraw()
+        elided = [i for i, r in enumerate(self.postit._regions) if r.elided]
+        if not elided:
+            self.skipTest("nothing needed shortening for this kanji")
+        index = elided[0]
+        self.postit._hover_region(index, 300, 300)
+        self.assertIsNotNone(self.postit._hover_job, "a cut meaning deserves a bubble")
+        self.postit._show_bubble()
+        self.postit.win.update()
+        self.assertTrue(self.postit._bubble_shown())
+        drawn = " ".join(
+            self.postit._bubble.canvas.itemcget(item, "text")
+            for item in self.postit._bubble.canvas.find_all()
+            if self.postit._bubble.canvas.type(item) == "text"
+        )
+        self.assertIn(self.postit._regions[index].text, drawn)
+        self.assertNotIn("…", drawn)
+
+    def test_elide_keeps_what_fits(self):
+        font = self.app.fonts.measurable(self.app.fonts.ui(10))
+        self.assertEqual(self.postit._elide("short", font, 500), "short")
+        cut = self.postit._elide("a very long meaning indeed", font, 40)
+        self.assertTrue(cut.endswith("…"))
+        self.assertLessEqual(font.measure(cut), 40)
+
     def test_vocabulary_words_are_selectable(self):
         self.postit.face = "verso"
         self.postit.options.verso = "vocabulary"

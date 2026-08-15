@@ -23,6 +23,7 @@ TEXT_SIZE = 21
 PADDING = 8
 MAX_WIDTH = 380  # a long sentence wraps rather than crossing the screen
 POINTER_GAP = 14
+PLAIN_SIZE = 12  # for text that has no readings, such as a meaning
 
 
 class Bubble:
@@ -65,6 +66,11 @@ class Bubble:
         canvas.delete("all")
         canvas.configure(bg=palette.paper)
 
+        if not any(rt for _text, rt in segments):
+            # Plain text, such as a meaning that had to be shortened to fit
+            # its column. It wants the Latin font and a more modest size.
+            return self._show_plain("".join(text for text, _rt in segments), palette, x, y)
+
         width, _height = ruby.measure(self.fonts, segments, TEXT_SIZE, RUBY_SIZE)
         wrap = min(MAX_WIDTH, max(40.0, width))
         layout = ruby.draw(
@@ -85,7 +91,23 @@ class Bubble:
             0, 0, box_w - 1, box_h - 1, outline=palette.fold, width=1
         )
 
-        # Keep it on screen: flip to the other side of the pointer if needed.
+        self._place(box_w, box_h, x, y)
+
+    def _show_plain(self, text: str, palette, x: int, y: int) -> None:
+        """A bubble holding ordinary text, wrapped, in the interface font."""
+        canvas = self.canvas
+        spec = self.fonts.ui(PLAIN_SIZE)
+        item = canvas.create_text(
+            PADDING, PADDING, text=text, anchor="nw",
+            fill=palette.ink, font=spec, width=MAX_WIDTH,
+        )
+        x0, y0, x1, y1 = canvas.bbox(item)
+        box_w, box_h = int(x1 - x0 + 2 * PADDING), int(y1 - y0 + 2 * PADDING)
+        canvas.create_rectangle(0, 0, box_w - 1, box_h - 1, outline=palette.fold, width=1)
+        self._place(box_w, box_h, x, y)
+
+    def _place(self, box_w: int, box_h: int, x: int, y: int) -> None:
+        """Put the bubble beside the pointer, keeping it on screen."""
         screen_w = self.win.winfo_screenwidth()
         screen_h = self.win.winfo_screenheight()
         left = x + POINTER_GAP
@@ -94,7 +116,6 @@ class Bubble:
             left = max(0, x - box_w - POINTER_GAP)
         if top + box_h > screen_h:
             top = max(0, y - box_h - POINTER_GAP)
-
         self.win.geometry(f"{box_w}x{box_h}+{int(left)}+{int(top)}")
         if not self._visible:
             self.win.deiconify()

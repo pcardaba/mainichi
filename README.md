@@ -66,9 +66,13 @@ with the furigana aligned per character, so 日曜日 shows にち above 日, �
 above 曜 and び above the last 日.
 
 The back of the note shows either **more vocabulary** written with the kanji
-(the default: ten more words per kanji, as many as the paper holds, so a
-bigger note shows more) or **example sentences**, one per word on the front.
-The choice is in the context menu under "Back of the note".
+(the default) or **example sentences**, one per word on the front. The choice
+is in the context menu under "Back of the note".
+
+The vocabulary side puts each meaning straight after its word, which leaves
+enough room for two columns even at the smallest note size: eight words fit
+where four did before. A bigger note widens the columns and adds rows rather
+than cramming in a third column, which would only shorten the meanings.
 
 The sentences are chosen *for the level*: short, everyday, and built from kanji the learner already knows.
 "Furigana" above is the share of sentences where every kanji could be given
@@ -144,6 +148,9 @@ The bubble is a window of its own, so it is not clipped by a small note, and
 it flips to the other side of the pointer rather than running off the screen.
 It goes away as soon as the pointer moves off the text or you click. Turn it
 off with **Bubble on hover** in the context menu.
+
+It does the same for a meaning that was too long for its column and had to be
+cut short with an ellipsis: hovering shows the whole of it.
 
 ## Stroke order
 

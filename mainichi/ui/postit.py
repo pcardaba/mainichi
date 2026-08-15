@@ -49,6 +49,9 @@ class _Region:
     boxes: list[tuple[float, float, float, float]]  # one per line of text
     # Set for text that has readings, which is what the hover bubble shows.
     furigana: tuple[tuple[str, str], ...] = ()
+    # True when what is drawn was shortened to fit; the bubble then shows
+    # the whole of it, so nothing is lost by the columns being narrow.
+    elided: bool = False
 
     def hit(self, x: float, y: float) -> bool:
         return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in self.boxes)
@@ -301,8 +304,10 @@ class PostItWindow:
         """
         if not self.options.hover_bubble:
             index = None
-        elif index is not None and not self._regions[index].furigana:
-            index = None
+        elif index is not None:
+            region = self._regions[index]
+            if not (region.furigana or region.elided):
+                index = None
 
         if index != self._hovered:
             self._hovered = index
@@ -325,17 +330,21 @@ class PostItWindow:
 
     def _show_bubble(self) -> None:
         """Pop the magnified word next to the pointer."""
-        self._hover_job = None
+        # Cancel rather than just forget the pending job: calling this
+        # directly would otherwise leave a frame queued that fires later,
+        # after the note may well be gone.
+        self._cancel_hover()
         index = self._hovered
         if index is None or index >= len(self._regions):
             return
         region = self._regions[index]
-        if not region.furigana:
+        if not (region.furigana or region.elided):
             return
         if self._bubble is None:
             self._bubble = Bubble(self.win, self.app.fonts)
         x, y = self._hover_point
-        self._bubble.show(region.furigana, self.palette, x, y)
+        segments = region.furigana or ((region.text, ''),)
+        self._bubble.show(segments, self.palette, x, y)
 
     def _hide_bubble(self) -> None:
         if self._bubble is not None:
@@ -691,6 +700,7 @@ class PostItWindow:
         text: str,
         boxes: list[tuple[float, float, float, float]] | None = None,
         furigana: tuple[tuple[str, str], ...] = (),
+        elided: bool = False,
     ) -> None:
         """Close the current region, covering everything drawn since _mark."""
         if not text:
@@ -708,7 +718,9 @@ class PostItWindow:
                 max(b[2] for b in spans),
                 max(b[3] for b in spans),
             )]
-        self._regions.append(_Region(text=text, boxes=boxes, furigana=tuple(furigana)))
+        self._regions.append(
+            _Region(text=text, boxes=boxes, furigana=tuple(furigana), elided=elided)
+        )
         self._items = []
 
     def _draw_selection(self) -> None:
@@ -1026,45 +1038,82 @@ class PostItWindow:
             self._items = []
             return
 
-        word_width = (w - 2 * pad) * 0.46
-        meaning_left = pad + word_width + gap
-        meaning_width = w - pad - meaning_left
+        fonts = self.app.fonts
+        content = w - 2 * pad
+        word_size = max(9, int(12 * scale))
+        meaning_size = max(8, int(10.5 * scale))
+        meaning_spec = fonts.ui(meaning_size)
+        meaning_font = fonts.measurable(meaning_spec)
+        inner_gap = max(4, int(5 * scale))
+
+        # The meaning sits straight after its word rather than in a column of
+        # its own: short words leave the rest of the line free, which is
+        # enough for a second column of entries even on the smallest note.
+        # Two columns at most. The text grows with the note, so a third
+        # column would not fit more words, it would only chop the meanings
+        # shorter: a bigger note is better spent on wider columns and more
+        # rows. The threshold scales with the font for the same reason.
+        column_gap = max(9, int(11 * scale))
+        columns = 2 if content >= 2 * self.MIN_COLUMN * scale + column_gap else 1
+        column_width = (content - column_gap * (columns - 1)) / columns
+
+        row_height = ruby.measure(fonts, ((" ", " "),), word_size)[1]
+        row_gap = max(3, int(4 * scale))
+        column = 0
         y = float(top)
 
         for word in self.card.vocabulary:
+            if y + row_height > floor:
+                break  # the paper is full
             first_item = len(c.find_all())
             first_region = len(self._regions)
+            x = pad + column * (column_width + column_gap)
 
+            segments = word.furigana or ((word.text, word.reading),)
+            word_width, _ = ruby.measure(fonts, segments, word_size)
             self._mark()
-            word_bottom, boxes = self._draw_ruby_text(
-                word.furigana or ((word.text, word.reading),),
-                pad, y, word_width, max(9, int(12 * scale)),
-            )
-            self._region(word.text, boxes, furigana=word.furigana or ((word.text, word.reading),))
+            _bottom, boxes = self._draw_ruby_text(segments, x, y, word_width + 2, word_size)
+            self._region(word.text, boxes, furigana=segments)
 
-            bottom = word_bottom
             meaning, language = word.meaning(self.options.language)
             meaning = meaning.split(";")[0].strip()
-            if self.options.show_translation and meaning:
+            room = column_width - word_width - inner_gap
+            if self.options.show_translation and meaning and room > meaning_size * 2:
                 shown = meaning if language == self.options.language else f"{meaning} [{language}]"
+                shown = self._elide(shown, meaning_font, room)
                 self._mark()
-                item = self._text(
-                    meaning_left, y + max(6, int(7 * scale)),
+                self._text(
+                    x + word_width + inner_gap,
+                    y + row_height - meaning_size * 1.45,
                     text=shown, anchor="nw",
                     fill=pal.ink_soft,
-                    font=self.app.fonts.ui(max(7, int(9 * scale))),
-                    width=meaning_width,
+                    font=meaning_spec,
                 )
-                self._region(meaning)
-                bottom = max(bottom, c.bbox(item)[3])
+                self._region(meaning, elided=shown.endswith("…"))
 
-            if bottom > floor:  # no room left: undo this row and stop
+            if boxes and boxes[-1][3] > floor:  # spilled over: undo and stop
                 for item in c.find_all()[first_item:]:
                     c.delete(item)
                 del self._regions[first_region:]
                 break
-            # Tight rows: the point of this side is to see many words at once.
-            y = bottom + gap * 0.3
+
+            column += 1
+            if column >= columns:
+                column = 0
+                y += row_height + row_gap
+
+    # Narrower than this a column cannot hold a word and its meaning.
+    MIN_COLUMN = 88
+
+    @staticmethod
+    def _elide(text: str, font, room: float) -> str:
+        """Shorten text with an ellipsis until it fits in ``room`` pixels."""
+        if font.measure(text) <= room:
+            return text
+        cut = text
+        while cut and font.measure(cut + "…") > room:
+            cut = cut[:-1]
+        return (cut.rstrip() + "…") if cut else ""
 
     def _draw_readings(self, w: int, h: int, scale: float, top: int, bottom: int) -> None:
         """Fallback for a kanji with no vocabulary: show its readings."""
