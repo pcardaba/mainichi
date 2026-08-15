@@ -21,6 +21,13 @@ DEFAULT_SIZE: tuple[int, int] = (300, 340)
 LANGUAGES: dict[str, str] = {"en": "English", "fr": "Français", "es": "Español"}
 DEFAULT_LANGUAGE = "en"
 
+# What the back of the note shows.
+VERSO_MODES: dict[str, str] = {
+    "sentences": "Example sentences",
+    "vocabulary": "More vocabulary",
+}
+DEFAULT_VERSO = "vocabulary"
+
 
 @dataclass(slots=True)
 class PostItOptions:
@@ -35,6 +42,7 @@ class PostItOptions:
     show_furigana: bool = True
     show_translation: bool = True
     language: str = DEFAULT_LANGUAGE
+    verso: str = DEFAULT_VERSO
 
     def copy(self) -> "PostItOptions":
         return replace(self)

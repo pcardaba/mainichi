@@ -13,7 +13,7 @@ is committed.
 Sources
 -------
 kanji-data       kanji list per JLPT level, meanings, readings   (CC BY 4.0)
-JMdict_e         vocabulary with frequency markers               (CC BY-SA 4.0)
+JMdict           vocabulary, frequency markers, en/fr/es glosses (CC BY-SA 4.0)
 JmdictFurigana   which kanji in a word takes which reading       (CC BY-SA 4.0)
 Tanaka corpus    example sentences with English translations     (CC BY 2.0 FR)
 
@@ -44,7 +44,10 @@ CACHE_DIR = REPO / ".datacache"
 SOURCES = {
     "kanji-data.json": "https://raw.githubusercontent.com/davidluzgouveia/kanji-data/master/kanji.json",
     "kanjidic2.xml.gz": "http://ftp.edrdg.org/pub/Nihongo/kanjidic2.xml.gz",
-    "JMdict_e.gz": "http://ftp.edrdg.org/pub/Nihongo/JMdict_e.gz",
+    # The full JMdict, not JMdict_e: it carries the French and Spanish word
+    # glosses as well as the English ones (11 MB more to download, build time
+    # only).
+    "JMdict.gz": "http://ftp.edrdg.org/pub/Nihongo/JMdict.gz",
     "examples.utf.gz": "http://ftp.edrdg.org/pub/Nihongo/examples.utf.gz",
     "JmdictFurigana.json.tar.gz": (
         "https://github.com/Doublevil/JmdictFurigana/releases/download/"
@@ -162,9 +165,14 @@ def reading_stem(reading: str) -> str:
 class Vocab:
     text: str
     reading: str
-    glosses: list[str]
+    glosses: dict[str, str]  # language code -> meaning, "en" always present
     score: int  # lower is more common
     common: bool
+
+
+# JMdict tags its glosses with ISO 639-2 codes; untagged means English.
+XML_LANG = "{http://www.w3.org/XML/1998/namespace}lang"
+GLOSS_LANGUAGES = {"eng": "en", "fre": "fr", "spa": "es"}
 
 
 # JMdict priority markers, best (most common) first.
@@ -241,17 +249,34 @@ def load_vocab(path: Path, wanted: set[str]) -> dict[str, list[Vocab]]:
                 tags += [t.text for t in reading_element.findall("re_pri") if t.text]
             score, common = _priority(tags)
 
-            sense = entry.find("sense")
-            glosses = []
-            if sense is not None:
-                misc = " ".join(m.text or "" for m in sense.findall("misc")).lower()
-                if any(tag in misc for tag in SKIP_MISC):
-                    entry.clear()  # archaic, poetical, ... : not worth learning
-                    continue
-                glosses = [g.text for g in sense.findall("gloss") if g.text][:2]
-            if not glosses:
+            senses = entry.findall("sense")
+            if not senses:
                 entry.clear()
                 continue
+            misc = " ".join(m.text or "" for m in senses[0].findall("misc")).lower()
+            if any(tag in misc for tag in SKIP_MISC):
+                entry.clear()  # archaic, poetical, ... : not worth learning
+                continue
+
+            # Each language sits in its own <sense>, so the English meaning
+            # comes from the first sense and the others from wherever they
+            # are. They are not guaranteed to describe the same sense: JMdict
+            # carries no mapping between them.
+            glosses: dict[str, str] = {}
+            english = [g.text for g in senses[0].findall("gloss") if g.text][:2]
+            if not english:
+                entry.clear()
+                continue
+            glosses["en"] = "; ".join(english)
+            for sense in senses:
+                for gloss in sense.findall("gloss"):
+                    code = GLOSS_LANGUAGES.get(gloss.get(XML_LANG) or "eng")
+                    if code and code != "en" and gloss.text:
+                        current = glosses.get(code)
+                        if current is None:
+                            glosses[code] = gloss.text
+                        elif current.count(";") < 1:
+                            glosses[code] = f"{current}; {gloss.text}"
 
             if (keb, reb) not in seen:
                 seen.add((keb, reb))
@@ -579,6 +604,7 @@ class Stats:
     with_words: int = 0
     with_sentences: int = 0
     words: int = 0
+    vocabulary: int = 0  # extra words for the vocabulary side
     sentences: int = 0
     sentences_annotated: int = 0
     sentences_on_level: int = 0  # every kanji at or below the target level
@@ -641,7 +667,7 @@ def pick_words(
             "t": vocab.text,
             "r": vocab.reading,
             "f": [[ruby, rt] for ruby, rt in segments],
-            "m": "; ".join(vocab.glosses),
+            "m": dict(vocab.glosses),
             "kr": used,
             "_cost": cost,
         }
@@ -692,6 +718,47 @@ def pick_words(
     return words
 
 
+EXTRA_VOCABULARY = 10  # more than fits on a note, so resizing shows more
+
+
+def pick_vocabulary(
+    kanji: Kanji,
+    candidates: list[Vocab],
+    furigana: dict[tuple[str, str], list[tuple[str, str]]],
+    levels_of: dict[str, str],
+    sentences: dict[str, list[str]],
+    already_shown: list[dict],
+) -> list[dict]:
+    """More words using this kanji, for the vocabulary side of the note.
+
+    The recto shows one word per reading; this is the next most common
+    vocabulary, so that flipping the note can show breadth instead of
+    example sentences.
+    """
+    taken = {word["t"] for word in already_shown}
+    scored: list[tuple[int, dict]] = []
+    for vocab in candidates:
+        if vocab.text in taken:
+            continue
+        segments = furigana.get((vocab.text, vocab.reading))
+        if not segments:
+            continue  # without alignment the ruby cannot be placed
+        taken.add(vocab.text)
+        cost = word_cost(vocab, kanji, levels_of, vocab.text in sentences)
+        # JMdict translates only part of its entries into French and Spanish.
+        # Among words of comparable usefulness, prefer the translated ones so
+        # that a note read in French is not mostly English fallbacks.
+        cost += 25 * (len(LANGUAGES) - len(vocab.glosses))
+        scored.append((cost, {
+            "t": vocab.text,
+            "r": vocab.reading,
+            "f": [[ruby, rt] for ruby, rt in segments],
+            "m": dict(vocab.glosses),
+        }))
+    scored.sort(key=lambda pair: pair[0])
+    return [word for _cost, word in scored[:EXTRA_VOCABULARY]]
+
+
 def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]:
     print("sources:")
     paths = {name: fetch(name, cache_dir) for name in SOURCES}
@@ -703,7 +770,7 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
     print(f"  {len(targets)} kanji across {', '.join(levels)}")
 
     print("loading vocabulary (JMdict) ...", flush=True)
-    vocab = load_vocab(paths["JMdict_e.gz"], set(targets))
+    vocab = load_vocab(paths["JMdict.gz"], set(targets))
     print(f"  {sum(len(v) for v in vocab.values())} word/kanji pairs")
 
     print("loading furigana alignment ...", flush=True)
@@ -740,6 +807,14 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
             kanji, vocab.get(char, []), furigana, levels_of, sentence_ids, stats[kanji.level]
         )
     print(f"  {len({w['t'] for ws in chosen.values() for w in ws})} distinct words chosen")
+
+    print("collecting extra vocabulary ...", flush=True)
+    extra: dict[str, list[dict]] = {}
+    for char, kanji in targets.items():
+        extra[char] = pick_vocabulary(
+            kanji, vocab.get(char, []), furigana, levels_of, sentence_ids, chosen[char]
+        )
+    print(f"  {sum(len(v) for v in extra.values())} extra words")
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for level in levels:
@@ -801,7 +876,9 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
                 "st": kanji.strokes,
                 "fq": kanji.freq,
                 "w": words,
+                "v": extra.get(char, []),
             })
+            stat.vocabulary += len(extra.get(char, []))
 
         payload = {
             "level": level,
@@ -840,13 +917,13 @@ def main(argv: list[str] | None = None) -> int:
     stats = build(args.levels, args.cache_dir, args.out_dir)
 
     print(
-        "\nlevel  kanji  words  sentences  furigana  on-level  too-hard"
+        "\nlevel  kanji  words  vocab  sentences  furigana  on-level  too-hard"
         "      en      fr      es"
     )
     for level, stat in stats.items():
         done = stat.sentences or 1
         print(
-            f"{level:>5} {stat.kanji:6d} {stat.words:6d} {stat.sentences:10d}"
+            f"{level:>5} {stat.kanji:6d} {stat.words:6d} {stat.vocabulary:6d} {stat.sentences:10d}"
             f" {stat.sentences_annotated / done:8.0%}"
             f" {stat.sentences_on_level / done:9.0%}"
             f" {stat.above_level_kanji / done:9.2f}"

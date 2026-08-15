@@ -186,6 +186,54 @@ class TestSelection(unittest.TestCase):
         self.postit._on_double_click(None)
         self.assertEqual(self.postit.face, "verso")
 
+    def test_vocabulary_is_the_default_back(self):
+        from mainichi.config import DEFAULT_VERSO
+
+        self.assertEqual(DEFAULT_VERSO, "vocabulary")
+        self.assertEqual(self.postit.options.verso, "vocabulary")
+
+    def test_back_shows_vocabulary_words(self):
+        self.postit.face = "verso"
+        self.postit.redraw()
+        shown = {r.text for r in self.postit._regions}
+        available = {w.text for w in self.postit.card.vocabulary}
+        self.assertTrue(available, "the card should carry extra vocabulary")
+        self.assertTrue(shown & available, "no vocabulary word was drawn")
+        # Those words are not the ones already on the front.
+        self.assertFalse(available & {w.text for w in self.postit.card.words})
+
+    def test_switching_the_back_changes_what_is_drawn(self):
+        self.postit.face = "verso"
+        self.postit.options.verso = "vocabulary"
+        self.postit.redraw()
+        vocabulary = {r.text for r in self.postit._regions}
+        self.postit.options.verso = "sentences"
+        self.postit.redraw()
+        sentences = {r.text for r in self.postit._regions}
+        self.assertNotEqual(vocabulary, sentences)
+        self.assertTrue(sentences & {s.text for s in self.postit.card.sentences})
+
+    def test_menu_switch_from_the_front_flips_to_show_it(self):
+        self.postit.face = "recto"
+        self.postit._var_verso.set("sentences")
+        self.postit._change_verso()
+        self.assertEqual(self.postit.options.verso, "sentences")
+        self.assertEqual(self.postit.face, "verso")
+
+    def test_vocabulary_words_are_selectable(self):
+        self.postit.face = "verso"
+        self.postit.options.verso = "vocabulary"
+        self.postit.redraw()
+        self.postit.win.update()
+        first = next(
+            i for i, r in enumerate(self.postit._regions)
+            if r.text in {w.text for w in self.postit.card.vocabulary}
+        )
+        x0, y0, x1, y1 = self.postit._regions[first].boxes[0]
+        self._press(int((x0 + x1) / 2), int((y0 + y1) / 2))
+        self.postit.copy_selection()
+        self.assertEqual(self.postit.win.clipboard_get(), self.postit._regions[first].text)
+
     def test_copy_with_nothing_selected_is_harmless(self):
         self.postit.win.clipboard_clear()
         self.postit.win.clipboard_append("untouched")

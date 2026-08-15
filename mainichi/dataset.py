@@ -93,7 +93,7 @@ class BundledProvider:
                 Word(
                     text=raw["t"],
                     reading=raw["r"],
-                    meaning=raw.get("m", ""),
+                    meanings=dict(raw.get("m", {})),
                     furigana=tuple((ruby, rt) for ruby, rt in raw.get("f", [])),
                 )
             )
@@ -107,6 +107,16 @@ class BundledProvider:
                     )
                 )
 
+        vocabulary = tuple(
+            Word(
+                text=raw["t"],
+                reading=raw["r"],
+                meanings=dict(raw.get("m", {})),
+                furigana=tuple((ruby, rt) for ruby, rt in raw.get("f", [])),
+            )
+            for raw in record.get("v", [])
+        )
+
         return KanjiCard(
             kanji=record["k"],
             level=level,
@@ -115,5 +125,6 @@ class BundledProvider:
             kun_readings=tuple(record.get("kun", ())),
             words=tuple(words),
             sentences=tuple(sentences),
+            vocabulary=vocabulary,
             strokes=record.get("st", 0),
         )

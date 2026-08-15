@@ -9,7 +9,7 @@ import random
 import unittest
 
 from mainichi.config import LEVELS
-from mainichi.content import Sentence
+from mainichi.content import Sentence, Word
 from mainichi.dataset import BundledProvider, DataNotBuilt
 
 # What tools/build_data.py produced, and what the JLPT reconstruction says.
@@ -93,6 +93,31 @@ class TestBundledData(unittest.TestCase):
                 rebuilt = "".join(text for text, _rt in sentence.furigana)
                 self.assertEqual(rebuilt, sentence.text)
                 self.assertTrue(sentence.translations.get("en"))
+
+    def test_word_meanings_carry_languages(self):
+        card = self.provider.next_card("N5", "日")
+        for word in (*card.words, *card.vocabulary):
+            with self.subTest(word=word.text):
+                self.assertTrue(word.meanings.get("en"), "English is always present")
+
+    def test_word_meaning_falls_back_to_english(self):
+        english_only = Word(text="x", reading="x", meanings={"en": "day"})
+        self.assertEqual(english_only.meaning("fr"), ("day", "en"))
+        both = Word(text="x", reading="x", meanings={"en": "day", "fr": "jour"})
+        self.assertEqual(both.meaning("fr"), ("jour", "fr"))
+        self.assertEqual(both.meaning("en"), ("day", "en"))
+
+    def test_beginner_levels_are_mostly_translated(self):
+        """The point of the full JMdict: N5/N4 words carry fr and es."""
+        for level in ("N5", "N4"):
+            words = [
+                word
+                for record in self.provider.load(level)
+                for word in record.get("w", []) + record.get("v", [])
+            ]
+            for language in ("fr", "es"):
+                share = sum(1 for w in words if language in w["m"]) / len(words)
+                self.assertGreater(share, 0.6, f"{level} {language}: only {share:.0%}")
 
     def test_translation_falls_back_to_english(self):
         english_only = Sentence(text="x", translations={"en": "hello"})

@@ -22,11 +22,25 @@ class Word:
 
     text: str  # e.g. 日本
     reading: str  # furigana for the whole word, e.g. にほん
-    meaning: str = ""  # e.g. "Japan"
+    # Meanings by language code, e.g. {"en": "Japan", "fr": "Japon"}. English
+    # is always present; JMdict translates only part of its entries.
+    meanings: Mapping[str, str] = field(default_factory=dict)
     # Per-character alignment, e.g. 日曜日 -> (("日","にち"),("曜","よう"),("日","び")).
     # Kana characters carry an empty reading. This is what lets the ruby text
     # sit over the right character instead of over the whole word.
     furigana: tuple[tuple[str, str], ...] = ()
+
+    def meaning(self, language: str) -> tuple[str, str]:
+        """The meaning and the language it is actually in.
+
+        Falls back to English, and says so, rather than quietly showing a
+        language the reader did not ask for.
+        """
+        text = self.meanings.get(language)
+        if text:
+            return text, language
+        fallback = self.meanings.get(DEFAULT_LANGUAGE, "")
+        return fallback, DEFAULT_LANGUAGE if fallback else language
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +78,9 @@ class KanjiCard:
     kun_readings: tuple[str, ...] = ()
     words: tuple[Word, ...] = ()
     sentences: tuple[Sentence, ...] = ()
+    # Further words using this kanji, beyond the one-per-reading set shown on
+    # the recto. The verso can show these instead of the example sentences.
+    vocabulary: tuple[Word, ...] = ()
     strokes: int = 0
 
     @property

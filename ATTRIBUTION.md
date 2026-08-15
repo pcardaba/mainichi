@@ -17,7 +17,7 @@ the source code, not to the contents of `mainichi/data/`.
 | Source | Used for | Licence |
 | --- | --- | --- |
 | [KANJIDIC2](https://www.edrdg.org/wiki/index.php/KANJIDIC_Project) | English meanings of each kanji | CC BY-SA 4.0, EDRDG |
-| [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) | vocabulary, readings, glosses, frequency markers | CC BY-SA 4.0, EDRDG |
+| [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) | vocabulary, readings, frequency markers, and the English, French and Spanish word meanings | CC BY-SA 4.0, EDRDG |
 | [JmdictFurigana](https://github.com/Doublevil/JmdictFurigana) | which kanji in a word takes which reading | CC BY-SA (as JMdict); tool itself MIT |
 | [Tanaka Corpus](https://www.edrdg.org/wiki/index.php/Tanaka_Corpus) | example sentences, English translations, the word-by-word annotation the sentence furigana is built from | CC BY 2.0 FR |
 | [Tatoeba](https://tatoeba.org/) | French and Spanish translations of those sentences | CC BY 2.0 FR |

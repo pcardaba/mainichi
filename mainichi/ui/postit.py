@@ -20,7 +20,7 @@ import tkinter as tk
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mainichi.config import LANGUAGES, MIN_SIZE, PostItOptions
+from mainichi.config import LANGUAGES, MIN_SIZE, VERSO_MODES, PostItOptions
 from mainichi.content import KanjiCard
 from mainichi.ui.theme import PALETTES, get_palette
 
@@ -179,6 +179,7 @@ class PostItWindow:
         self._var_furigana = tk.BooleanVar(self.win, self.options.show_furigana)
         self._var_translation = tk.BooleanVar(self.win, self.options.show_translation)
         self._var_language = tk.StringVar(self.win, self.options.language)
+        self._var_verso = tk.StringVar(self.win, self.options.verso)
 
         m = tk.Menu(self.win, tearoff=0)
         m.add_checkbutton(label="Always on top", variable=self._var_on_top, command=self._toggle_on_top)
@@ -190,6 +191,16 @@ class PostItWindow:
         m.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
         m.add_command(label="Flip", accelerator="Double click", command=self.flip)
         m.add_command(label="Next kanji", command=self.next_card)
+
+        back = tk.Menu(m, tearoff=0)
+        for mode, label in VERSO_MODES.items():
+            back.add_radiobutton(
+                label=label,
+                value=mode,
+                variable=self._var_verso,
+                command=self._change_verso,
+            )
+        m.add_cascade(label="Back of the note", menu=back)
 
         languages = tk.Menu(m, tearoff=0)
         for code, label in LANGUAGES.items():
@@ -218,7 +229,7 @@ class PostItWindow:
 
         # Escape closes the menu wherever the keyboard focus happens to be,
         # and the grab is dropped as soon as the menu is off screen.
-        for menu in (m, colours, languages):
+        for menu in (m, colours, languages, back):
             menu.bind("<Escape>", self._dismiss_menu)
             menu.bind("<Unmap>", lambda _e: m.grab_release())
         self.menu = m
@@ -394,6 +405,16 @@ class PostItWindow:
     def _toggle_translation(self) -> None:
         self.options.show_translation = self._var_translation.get()
         self.redraw()
+
+    def _change_verso(self) -> None:
+        """Switch the back of the note between sentences and vocabulary."""
+        self.options.verso = self._var_verso.get()
+        self._selection.clear()  # the back now holds different text
+        self._select_anchor = None
+        if self.face == RECTO:
+            self.flip()  # show the effect straight away
+        else:
+            self.redraw()
 
     def _change_language(self) -> None:
         self.options.language = self._var_language.get()
@@ -692,13 +713,15 @@ class PostItWindow:
             x += width
         self._region(word.text)
 
-        # The English gloss, as much of it as the slot can take.
-        if word.meaning:
-            gloss = word.meaning.split(";")[0].strip()
+        # The meaning, as much of it as the slot can take.
+        gloss, language = word.meaning(self.options.language)
+        gloss = gloss.split(";")[0].strip()
+        if gloss:
+            shown = gloss if language == self.options.language else f"{gloss} [{language}]"
             self._mark()
             self._text(
                 centre_x, baseline + size * 1.5,
-                text=gloss,
+                text=shown,
                 anchor="n",
                 fill=pal.ink_soft,
                 font=fonts.ui(max(6, int(8 * scale))),
@@ -766,6 +789,67 @@ class PostItWindow:
             boxes.append((line_start, y, x, y + line_height))
         return y + line_height, boxes
 
+    def _draw_vocabulary(
+        self, w: int, h: int, scale: float, pad: int, top: int, floor: int, gap: int
+    ) -> None:
+        """The other back side: more words written with this kanji.
+
+        One word per row, furigana above it on the left, meaning on the
+        right. As many as the paper holds, so making the note bigger shows
+        more of them.
+        """
+        c = self.canvas
+        pal = self.palette
+        if not self.card.vocabulary:
+            self._text(
+                w / 2, (top + floor) / 2,
+                text="no further common words",
+                fill=pal.guide,
+                font=self.app.fonts.ui(max(7, int(9 * scale))),
+            )
+            self._items = []
+            return
+
+        word_width = (w - 2 * pad) * 0.46
+        meaning_left = pad + word_width + gap
+        meaning_width = w - pad - meaning_left
+        y = float(top)
+
+        for word in self.card.vocabulary:
+            first_item = len(c.find_all())
+            first_region = len(self._regions)
+
+            self._mark()
+            word_bottom, boxes = self._draw_ruby_text(
+                word.furigana or ((word.text, word.reading),),
+                pad, y, word_width, max(9, int(12 * scale)),
+            )
+            self._region(word.text, boxes)
+
+            bottom = word_bottom
+            meaning, language = word.meaning(self.options.language)
+            meaning = meaning.split(";")[0].strip()
+            if self.options.show_translation and meaning:
+                shown = meaning if language == self.options.language else f"{meaning} [{language}]"
+                self._mark()
+                item = self._text(
+                    meaning_left, y + max(6, int(7 * scale)),
+                    text=shown, anchor="nw",
+                    fill=pal.ink_soft,
+                    font=self.app.fonts.ui(max(7, int(9 * scale))),
+                    width=meaning_width,
+                )
+                self._region(meaning)
+                bottom = max(bottom, c.bbox(item)[3])
+
+            if bottom > floor:  # no room left: undo this row and stop
+                for item in c.find_all()[first_item:]:
+                    c.delete(item)
+                del self._regions[first_region:]
+                break
+            # Tight rows: the point of this side is to see many words at once.
+            y = bottom + gap * 0.3
+
     def _draw_readings(self, w: int, h: int, scale: float, top: int, bottom: int) -> None:
         """Fallback for a kanji with no vocabulary: show its readings."""
         pal = self.palette
@@ -818,6 +902,8 @@ class PostItWindow:
             for i in range(rows):
                 y0 = top + i * (row_h + gap)
                 self._zone(pad, y0, w - pad, y0 + row_h, "sentence", scale)
+        elif self.options.verso == "vocabulary":
+            self._draw_vocabulary(w, h, scale, pad, top, floor, gap)
         else:
             # Sentences are stacked in the order of the words on the recto,
             # each one followed by its own translation. They are laid out as

@@ -10,10 +10,12 @@ from mainichi import __version__
 from mainichi.config import (
     DEFAULT_LANGUAGE,
     DEFAULT_LEVEL,
+    DEFAULT_VERSO,
     DEFAULT_SIZE,
     LANGUAGES,
     LEVELS,
     MIN_SIZE,
+    VERSO_MODES,
     AppConfig,
     PostItOptions,
 )
@@ -53,6 +55,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(LANGUAGES),
         default=DEFAULT_LANGUAGE,
         help="language of the sentence translations (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--verso",
+        choices=sorted(VERSO_MODES),
+        default=DEFAULT_VERSO,
+        help="what the back of the note shows (default: %(default)s)",
     )
     parser.add_argument(
         "--size",
@@ -129,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
             palette=args.colour,
             always_on_top=not args.no_on_top,
             language=args.language,
+            verso=args.verso,
         ),
     )
 
