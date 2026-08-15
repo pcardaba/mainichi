@@ -99,7 +99,13 @@ class BundledProvider:
             )
             example = raw.get("s")
             if example:
-                sentences.append(Sentence(text=example[0], translation=example[1]))
+                sentences.append(
+                    Sentence(
+                        text=example["t"],
+                        furigana=tuple((text, rt) for text, rt in example.get("f", [])),
+                        translations=dict(example.get("tr", {})),
+                    )
+                )
 
         return KanjiCard(
             kanji=record["k"],

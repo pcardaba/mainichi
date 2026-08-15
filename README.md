@@ -23,6 +23,7 @@ python -m mainichi                 # random kanji from N5 (default)
 python -m mainichi --level N3      # random kanji from N3
 python -m mainichi --kanji 日      # one specific kanji
 python -m mainichi --colour blue --size 360x400
+python -m mainichi --language fr    # translations in French (en, fr, es)
 python -m mainichi --decorated     # keep the title bar, if borderless misbehaves
 ```
 
@@ -37,7 +38,7 @@ Launch it several times for several post-its, or press `Ctrl+N` on one.
 | left click | flip between recto (kanji + words) and verso (meaning + sentences) |
 | drag | move the note around the desktop |
 | drag the folded corner | resize the note |
-| right click | context menu (on-top, furigana, translation, colour, next, ...) |
+| right click | context menu (on-top, furigana, translation, language, colour, next, ...) |
 | left click outside the menu, or `Esc` | close the context menu |
 | `Space` | flip |
 | `Ctrl+N` / `Ctrl+W` / `Ctrl+Q` | new note / close note / quit |
@@ -46,21 +47,32 @@ Closing the last post-it quits the application.
 
 ## The data
 
-| Level | Kanji | Words | With an example sentence |
-| --- | ---: | ---: | ---: |
-| N5 | 79 | 266 | 231 |
-| N4 | 166 | 472 | 426 |
-| N3 | 367 | 1009 | 873 |
-| N2 | 367 | 826 | 691 |
-| N1 | 1232 | 2299 | 1560 |
+| Level | Kanji | Words | Sentences | Furigana | On level | fr | es |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| N5 | 79 | 266 | 231 | 98% | 50% | 41% | 35% |
+| N4 | 166 | 472 | 426 | 99% | 69% | 47% | 45% |
+| N3 | 367 | 1009 | 872 | 99% | 88% | 59% | 54% |
+| N2 | 367 | 826 | 690 | 99% | 87% | 52% | 45% |
+| N1 | 1232 | 2299 | 1558 | 99% | 97% | 47% | 36% |
 
 Each kanji carries its English meanings, its on and kun readings, and up to
 four common words — **one per reading of that kanji**, most common first —
 with the furigana aligned per character, so 日曜日 shows にち above 日, よう
-above 曜 and び above the last 日. Each word brings an example sentence with
-its English translation for the back of the note.
+above 曜 and び above the last 日.
 
-The whole set is 448 KiB, gzipped JSON, one file per level, loaded lazily:
+Each word brings an example sentence, and the sentences are chosen *for the
+level*: short, everyday, and built from kanji the learner already knows.
+"Furigana" above is the share of sentences where every kanji could be given
+a reading; "on level" the share using no kanji above the level. N5 is the
+hard case — with only 79 kanji available, half of its sentences still need
+one harder character, which is why full furigana matters.
+
+Translations come in **English, French and Spanish**. English is always
+present; French and Spanish exist for roughly half the sentences, and the
+note falls back to English with a small `[en]` marker rather than silently
+showing another language.
+
+The whole set is 656 KiB, gzipped JSON, one file per level, loaded lazily:
 showing an N5 note never reads the 1232 kanji of N1. **The application never
 uses the network.**
 
@@ -102,9 +114,8 @@ lookup would not touch `ui/`.
 ## Not implemented yet
 
 * **Traces**: stroke order animation (menu entry present but disabled)
-* **Copy**: text selection and `Ctrl+C` (menu entry present but disabled)
-* furigana on the example sentences (the words have it; sentences would need
-  a morphological analyser, which means a dependency)
+* **Copy**: text selection and `Ctrl+C` (menu entry present but disabled).
+  Left click still flips the note; that will change when selection lands
 * persisting position, size, colour and options between runs
 * 20 of the N1 kanji are used almost only in names and have no common word;
   those notes show the readings instead

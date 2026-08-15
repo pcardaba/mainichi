@@ -18,7 +18,7 @@ import sys
 import tkinter as tk
 from typing import TYPE_CHECKING
 
-from mainichi.config import MIN_SIZE, PostItOptions
+from mainichi.config import LANGUAGES, MIN_SIZE, PostItOptions
 from mainichi.content import KanjiCard
 from mainichi.ui.theme import PALETTES, get_palette
 
@@ -148,6 +148,7 @@ class PostItWindow:
         self._var_on_top = tk.BooleanVar(self.win, self.options.always_on_top)
         self._var_furigana = tk.BooleanVar(self.win, self.options.show_furigana)
         self._var_translation = tk.BooleanVar(self.win, self.options.show_translation)
+        self._var_language = tk.StringVar(self.win, self.options.language)
 
         m = tk.Menu(self.win, tearoff=0)
         m.add_checkbutton(label="Always on top", variable=self._var_on_top, command=self._toggle_on_top)
@@ -158,6 +159,16 @@ class PostItWindow:
         m.add_command(label="Copy", accelerator="Ctrl+C", state="disabled")  # needs selectable text
         m.add_command(label="Flip", accelerator="Space", command=self.flip)
         m.add_command(label="Next kanji", command=self.next_card)
+
+        languages = tk.Menu(m, tearoff=0)
+        for code, label in LANGUAGES.items():
+            languages.add_radiobutton(
+                label=label,
+                value=code,
+                variable=self._var_language,
+                command=self._change_language,
+            )
+        m.add_cascade(label="Language", menu=languages)
 
         colours = tk.Menu(m, tearoff=0)
         for pal in PALETTES.values():
@@ -176,7 +187,7 @@ class PostItWindow:
 
         # Escape closes the menu wherever the keyboard focus happens to be,
         # and the grab is dropped as soon as the menu is off screen.
-        for menu in (m, colours):
+        for menu in (m, colours, languages):
             menu.bind("<Escape>", self._dismiss_menu)
             menu.bind("<Unmap>", lambda _e: m.grab_release())
         self.menu = m
@@ -303,6 +314,12 @@ class PostItWindow:
 
     def _toggle_translation(self) -> None:
         self.options.show_translation = self._var_translation.get()
+        self.redraw()
+
+    def _change_language(self) -> None:
+        self.options.language = self._var_language.get()
+        self.options.show_translation = True  # picking a language implies wanting it
+        self._var_translation.set(True)
         self.redraw()
 
     def _apply_topmost(self) -> None:
@@ -520,6 +537,59 @@ class PostItWindow:
                 justify="center",
             )
 
+    # Japanese line breaking: these may not begin a line (kinsoku shori).
+    _NO_LINE_START = "。、）」』？！ぁぃぅぇぉっゃゅょゎヽヾー・"
+
+    def _draw_ruby_text(
+        self,
+        segments,
+        left: float,
+        top: float,
+        max_width: float,
+        size: int,
+    ) -> float:
+        """Draw furigana'd Japanese that wraps, and return the y below it.
+
+        Tk can wrap a plain string on its own, but not with ruby sitting over
+        individual characters, so the line breaking is done here: every
+        annotated group is one unbreakable cell, plain kana break anywhere.
+        """
+        c = self.canvas
+        pal = self.palette
+        fonts = self.app.fonts
+        main_spec = fonts.jp(size)
+        ruby_spec = fonts.jp(max(6, int(size * 0.52)))
+        main = fonts.measurable(main_spec)
+        ruby = fonts.measurable(ruby_spec)
+
+        show_ruby = self.options.show_furigana and any(rt for _, rt in segments)
+        ruby_height = ruby.metrics("linespace") if show_ruby else 0
+        line_height = ruby_height + main.metrics("linespace")
+
+        # An annotated group stays whole; unannotated runs break per character
+        # so that a long tail of kana still wraps.
+        cells: list[tuple[str, str, float]] = []
+        for text, rt in segments:
+            if rt and show_ruby:
+                # The reading is often wider than the character it sits on.
+                cells.append((text, rt, max(main.measure(text), ruby.measure(rt) + 2)))
+            elif rt:
+                cells.append((text, "", main.measure(text)))
+            else:
+                for char in text:
+                    cells.append((char, "", main.measure(char)))
+
+        x, y = left, top
+        for text, rt, width in cells:
+            if x + width > left + max_width and x > left and text[0] not in self._NO_LINE_START:
+                x = left
+                y += line_height
+            if rt:
+                c.create_text(x + width / 2, y, text=rt, anchor="n", fill=pal.ink_soft, font=ruby_spec)
+            c.create_text(x + width / 2, y + ruby_height, text=text, anchor="n", fill=pal.ink, font=main_spec)
+            x += width
+        return y + line_height
+
     def _draw_readings(self, w: int, h: int, scale: float, top: int, bottom: int) -> None:
         """Fallback for a kanji with no vocabulary: show its readings."""
         pal = self.palette
@@ -574,24 +644,28 @@ class PostItWindow:
             text_width = w - 2 * pad
             y = float(top)
             for sentence in self.card.sentences:
-                drawn = [c.create_text(
-                    pad, y,
-                    text=sentence.text, anchor="nw",
-                    fill=pal.ink, font=self.app.fonts.jp(max(9, int(12 * scale))),
-                    width=text_width,
-                )]
-                y = c.bbox(drawn[0])[3]
-                if self.options.show_translation and sentence.translation:
-                    # Directly under its own sentence, so the pairing is clear.
-                    drawn.append(c.create_text(
-                        pad, y + max(1, int(2 * scale)),
-                        text=sentence.translation, anchor="nw",
-                        fill=pal.ink_soft, font=self.app.fonts.ui(max(7, int(9 * scale))),
-                        width=text_width,
-                    ))
-                    y = c.bbox(drawn[-1])[3]
+                mark = len(c.find_all())  # so this sentence can be undone
+                segments = sentence.furigana or ((sentence.text, ""),)
+                y = self._draw_ruby_text(
+                    segments, pad, y, text_width, max(9, int(12 * scale))
+                )
+                if self.options.show_translation:
+                    text, language = sentence.translation(self.options.language)
+                    if text:
+                        if language != self.options.language:
+                            # Say so rather than quietly showing another
+                            # language: not every sentence is translated.
+                            text = f"{text}  [{language}]"
+                        item = c.create_text(
+                            pad, y + max(1, int(2 * scale)),
+                            text=text, anchor="nw",
+                            fill=pal.ink_soft,
+                            font=self.app.fonts.ui(max(7, int(9 * scale))),
+                            width=text_width,
+                        )
+                        y = c.bbox(item)[3]
                 if y > floor:  # ran off the note: drop this one and stop
-                    for item in drawn:
+                    for item in c.find_all()[mark:]:
                         c.delete(item)
                     break
                 y += gap

@@ -17,6 +17,10 @@ DEFAULT_LEVEL = "N5"
 MIN_SIZE: tuple[int, int] = (210, 230)
 DEFAULT_SIZE: tuple[int, int] = (300, 340)
 
+# Languages the sentence translations can be shown in.
+LANGUAGES: dict[str, str] = {"en": "English", "fr": "Français", "es": "Español"}
+DEFAULT_LANGUAGE = "en"
+
 
 @dataclass(slots=True)
 class PostItOptions:
@@ -30,6 +34,7 @@ class PostItOptions:
     always_on_top: bool = True
     show_furigana: bool = True
     show_translation: bool = True
+    language: str = DEFAULT_LANGUAGE
 
     def copy(self) -> "PostItOptions":
         return replace(self)

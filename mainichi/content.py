@@ -9,8 +9,11 @@ without touching the presentation layer.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from mainichi.config import DEFAULT_LANGUAGE
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +34,23 @@ class Sentence:
     """An example sentence shown on the verso, one per word."""
 
     text: str
-    reading: str = ""
-    translation: str = ""
+    # Same per-character alignment as Word.furigana, for the whole sentence.
+    furigana: tuple[tuple[str, str], ...] = ()
+    # Translations by language code: "en", "fr", "es".
+    translations: Mapping[str, str] = field(default_factory=dict)
+
+    def translation(self, language: str) -> tuple[str, str]:
+        """The translation and the language it is actually in.
+
+        Tatoeba has a French or Spanish translation for only part of its
+        Japanese sentences, so the caller is told when it had to fall back to
+        English and can say so rather than silently showing another language.
+        """
+        text = self.translations.get(language)
+        if text:
+            return text, language
+        fallback = self.translations.get(DEFAULT_LANGUAGE, "")
+        return fallback, DEFAULT_LANGUAGE if fallback else language
 
 
 @dataclass(frozen=True, slots=True)

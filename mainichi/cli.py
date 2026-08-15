@@ -8,8 +8,10 @@ import tkinter as tk
 
 from mainichi import __version__
 from mainichi.config import (
+    DEFAULT_LANGUAGE,
     DEFAULT_LEVEL,
     DEFAULT_SIZE,
+    LANGUAGES,
     LEVELS,
     MIN_SIZE,
     AppConfig,
@@ -45,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
         choices=sorted(PALETTES),
         default=DEFAULT_PALETTE,
         help=f"post-it background colour (default: {DEFAULT_PALETTE})",
+    )
+    parser.add_argument(
+        "-L", "--language",
+        choices=sorted(LANGUAGES),
+        default=DEFAULT_LANGUAGE,
+        help="language of the sentence translations (default: %(default)s)",
     )
     parser.add_argument(
         "--size",
@@ -120,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         options=PostItOptions(
             palette=args.colour,
             always_on_top=not args.no_on_top,
+            language=args.language,
         ),
     )
 

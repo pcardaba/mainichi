@@ -25,12 +25,12 @@ shipped by kanji-data. It is an approximation, not an official list.
 from __future__ import annotations
 
 import argparse
+import bz2
 import gzip
+import io
 import json
 import re
-import sys
 import tarfile
-import unicodedata
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -50,7 +50,15 @@ SOURCES = {
         "https://github.com/Doublevil/JmdictFurigana/releases/download/"
         "2.3.1%2B2026-07-25/JmdictFurigana.json.tar.gz"
     ),
+    # Tatoeba, for the French and Spanish translations. The Tanaka corpus
+    # sentences are Tatoeba sentences, and its #ID= field carries the Tatoeba
+    # id, so the two join directly.
+    "fra_sentences.tsv.bz2": "https://downloads.tatoeba.org/exports/per_language/fra/fra_sentences.tsv.bz2",
+    "spa_sentences.tsv.bz2": "https://downloads.tatoeba.org/exports/per_language/spa/spa_sentences.tsv.bz2",
+    "links.tar.bz2": "https://downloads.tatoeba.org/exports/links.tar.bz2",
 }
+
+LANGUAGES = ("en", "fr", "es")
 
 LEVELS = ("N5", "N4", "N3", "N2", "N1")
 WORDS_PER_KANJI = 4  # at most one per distinct reading; the note shows 3 well
@@ -322,13 +330,158 @@ def canonical_reading(kanji: Kanji, used: str) -> str:
 
 # ----------------------------------------------------------------- sentences
 
-_TOKEN_RE = re.compile(r"^([^\s({\[~]+)")
+# A Tanaka B-line token: headword(reading)[sense]{surface as written}~
+_TOKEN_RE = re.compile(
+    r"^(?P<head>[^\s({\[~]+)"
+    r"(?:\((?P<read>[^)]*)\))?"
+    r"(?:\[[^\]]*\])?"
+    r"(?:\{(?P<surf>[^}]*)\})?"
+)
+_LATIN_DIGIT_RE = re.compile(r"[A-Za-z0-9０-９]")
 
 
-def load_sentences(path: Path, wanted_words: set[str]) -> dict[str, list[tuple[str, str]]]:
-    """Word -> [(japanese, english), ...] from the Tanaka corpus."""
-    by_word: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    japanese = english = ""
+@dataclass(slots=True)
+class Example:
+    """One example sentence, annotated and translated."""
+
+    jid: str
+    text: str
+    furigana: list[tuple[str, str]]
+    complete: bool  # every kanji got a reading
+    translations: dict[str, str]
+
+
+class Annotator:
+    """Adds per-kanji furigana to a sentence, without a morphological analyser.
+
+    The Tanaka corpus already lists the dictionary form of every word in a
+    sentence, and JmdictFurigana knows how each dictionary form is read, so
+    the two together are enough: look each word up, then map its readings
+    onto the inflected form as actually written.
+    """
+
+    def __init__(self, table: dict[tuple[str, str], list[tuple[str, str]]]) -> None:
+        self.by_pair = table
+        self.by_text: dict[str, list[list[tuple[str, str]]]] = defaultdict(list)
+        for (text, _reading), segments in table.items():
+            self.by_text[text].append(segments)
+
+    def _segments_for(self, head: str, reading: str | None) -> list[tuple[str, str]] | None:
+        if reading and (head, reading) in self.by_pair:
+            return self.by_pair[(head, reading)]
+        options = self.by_text.get(head)
+        if not options:
+            return None
+        # Homographs (言う read いう or ゆう): the corpus spells the reading
+        # out only when it is the unusual one, so the primary entry is right.
+        return options[0]
+
+    @staticmethod
+    def _onto_surface(surface: str, segments: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Map a dictionary form's readings onto the inflected surface form.
+
+        会う → [(会,あ),(う,)] applied to 会えない gives [(会,あ),(えない,)]:
+        the kanji keeps its reading, the okurigana is taken as written.
+        """
+        out: list[tuple[str, str]] = []
+        cursor = 0
+        for ruby, rt in segments:
+            if not rt:
+                continue  # kana in the dictionary form; may have inflected
+            at = surface.find(ruby, cursor)
+            if at < 0:
+                continue
+            if at > cursor:
+                out.append((surface[cursor:at], ""))
+            out.append((ruby, rt))
+            cursor = at + len(ruby)
+        if cursor < len(surface):
+            out.append((surface[cursor:], ""))
+        return out
+
+    def annotate(self, sentence: str, bline: str) -> tuple[list[tuple[str, str]], bool]:
+        """Return (segments, every kanji has a reading)."""
+        out: list[tuple[str, str]] = []
+        cursor = 0
+        for raw in bline.split():
+            match = _TOKEN_RE.match(raw)
+            if not match:
+                continue
+            head, reading, surf = match.group("head"), match.group("read"), match.group("surf")
+            surface = surf or head
+            at = sentence.find(surface, cursor)
+            if at < 0:
+                continue
+            if at > cursor:
+                out.append((sentence[cursor:at], ""))
+            if not KANJI_RE.search(surface):
+                out.append((surface, ""))
+            else:
+                segments = self._segments_for(head, reading) or self._segments_for(surface, None)
+                if segments:
+                    out.extend(self._onto_surface(surface, segments))
+                elif reading and surface == head:
+                    out.append((surface, reading))
+                else:
+                    out.append((surface, ""))  # no reading found
+            cursor = at + len(surface)
+        if cursor < len(sentence):
+            out.append((sentence[cursor:], ""))
+
+        merged: list[tuple[str, str]] = []
+        for text, rt in out:
+            if not rt and merged and not merged[-1][1]:
+                merged[-1] = (merged[-1][0] + text, "")
+            else:
+                merged.append((text, rt))
+
+        unread = sum(len(KANJI_RE.findall(t)) for t, rt in merged if not rt)
+        return merged, unread == 0
+
+
+def load_translations(
+    links_path: Path, language_paths: dict[str, Path], japanese_ids: set[str]
+) -> dict[str, dict[str, str]]:
+    """Tatoeba id -> {"fr": ..., "es": ...} for the sentences we care about."""
+    # Which foreign sentences are linked to our Japanese ones?
+    linked: dict[str, list[str]] = defaultdict(list)
+    targets: set[str] = set()
+    with tarfile.open(links_path, "r:bz2") as archive:
+        member = next(m for m in archive.getmembers() if m.name.endswith(".csv"))
+        stream = archive.extractfile(member)
+        assert stream is not None
+        for line in io.TextIOWrapper(stream, encoding="utf-8"):
+            left, _, right = line.rstrip("\n").partition("\t")
+            if left in japanese_ids:
+                linked[left].append(right)
+                targets.add(right)
+
+    translations: dict[str, dict[str, str]] = defaultdict(dict)
+    for language, path in language_paths.items():
+        text_by_id: dict[str, str] = {}
+        with bz2.open(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                parts = line.rstrip("\n").split("\t")  # id, language, text
+                if len(parts) == 3 and parts[0] in targets:
+                    text_by_id[parts[0]] = parts[2]
+        for japanese_id, others in linked.items():
+            for other in others:
+                if other in text_by_id:
+                    # Keep the shortest translation: they are usually the
+                    # plainest, and the note has little room.
+                    current = translations[japanese_id].get(language)
+                    if current is None or len(text_by_id[other]) < len(current):
+                        translations[japanese_id][language] = text_by_id[other]
+    return translations
+
+
+def load_sentences(
+    path: Path, wanted_words: set[str], annotator: Annotator
+) -> tuple[dict[str, Example], dict[str, list[str]]]:
+    """Parse the Tanaka corpus into annotated examples indexed by word."""
+    examples: dict[str, Example] = {}
+    by_word: dict[str, list[str]] = defaultdict(list)
+    japanese = english = jid = ""
 
     with gzip.open(path, "rt", encoding="utf-8") as handle:
         for line in handle:
@@ -336,22 +489,85 @@ def load_sentences(path: Path, wanted_words: set[str]) -> dict[str, list[tuple[s
                 body = line[3:].rstrip("\n")
                 parts = body.split("\t")
                 japanese = parts[0]
-                english = parts[1].split("#ID=")[0] if len(parts) > 1 else ""
-            elif line.startswith("B: ") and japanese and english:
+                english = jid = ""
+                if len(parts) > 1:
+                    english, _, ident = parts[1].partition("#ID=")
+                    # "#ID=<english id>_<japanese id>": the Japanese sentence
+                    # is the second one, which is the id Tatoeba links use.
+                    jid = ident.split("_")[-1].strip() if ident else ""
+            elif line.startswith("B: ") and japanese and english and jid:
+                heads = []
                 for token in line[3:].split():
                     match = _TOKEN_RE.match(token)
-                    if not match:
-                        continue
-                    head = match.group(1)
-                    if head in wanted_words and len(by_word[head]) < 50:
-                        by_word[head].append((japanese, english))
-                japanese = english = ""
+                    if match:
+                        heads.append(match.group("head"))
+                if any(head in wanted_words for head in heads):
+                    if jid not in examples:
+                        segments, complete = annotator.annotate(japanese, line[3:].rstrip("\n"))
+                        examples[jid] = Example(
+                            jid=jid,
+                            text=japanese,
+                            furigana=segments,
+                            complete=complete,
+                            translations={"en": english.strip()},
+                        )
+                    for head in set(heads):
+                        if head in wanted_words and len(by_word[head]) < 200:
+                            by_word[head].append(jid)
+                japanese = english = jid = ""
 
-    # Short, complete sentences make the better examples.
-    for word, pairs in by_word.items():
-        pairs.sort(key=lambda p: (abs(len(p[0]) - 18), len(p[1])))
-        by_word[word] = pairs[:3]
-    return by_word
+    return examples, by_word
+
+
+def sentence_cost(example: Example, level_rank: int, levels_of: dict[str, str]) -> int:
+    """How well a sentence suits a learner at this level. Lower is better.
+
+    A learner at N5 should get everyday sentences built from N5 kanji, not a
+    grammatically fine sentence bristling with N1 characters.
+    """
+    cost = 0
+    for char in KANJI_RE.findall(example.text):
+        level = levels_of.get(char)
+        if level is None:
+            cost += 400  # not a JLPT kanji: certainly too hard
+        else:
+            harder = LEVELS.index(level) - level_rank
+            if harder > 0:
+                cost += 190 * harder
+
+    # Everyday sentences are short ones. Around 16 characters reads well on
+    # a post-it; much longer and it wraps into a wall of text.
+    cost += 4 * abs(len(example.text) - 16)
+    if len(example.text) > 34:
+        cost += 250
+
+    if not example.complete:
+        cost += 400  # cannot be fully furigana'd, so it cannot be read
+    if _LATIN_DIGIT_RE.search(example.text):
+        cost += 60  # dates, measurements, acronyms: rarely casual speech
+    return cost
+
+
+# Sentences within this much of the best score are treated as equally
+# suitable for the level, so the tie can be broken on something else.
+_LEVEL_SLACK = 120
+
+
+def pick_sentence(
+    candidates: list[Example], level_rank: int, levels_of: dict[str, str]
+) -> Example | None:
+    """The best example for this level, preferring fully translated ones.
+
+    Tatoeba has a French or Spanish translation for only about a fifth of
+    its Japanese sentences. Rather than let that drag in harder sentences,
+    the level fit is settled first and the translations only break ties.
+    """
+    if not candidates:
+        return None
+    scored = [(sentence_cost(e, level_rank, levels_of), e) for e in candidates]
+    floor = min(cost for cost, _ in scored)
+    shortlist = [(cost, e) for cost, e in scored if cost <= floor + _LEVEL_SLACK]
+    return min(shortlist, key=lambda pair: (-len(pair[1].translations), pair[0]))[1]
 
 
 # --------------------------------------------------------------------- build
@@ -364,7 +580,11 @@ class Stats:
     with_sentences: int = 0
     words: int = 0
     sentences: int = 0
+    sentences_annotated: int = 0
+    sentences_on_level: int = 0  # every kanji at or below the target level
+    above_level_kanji: int = 0  # how many too-hard kanji, in total
     readings_unknown: int = 0
+    translated: dict[str, int] = field(default_factory=lambda: {k: 0 for k in LANGUAGES})
     missing: list[str] = field(default_factory=list)
 
 
@@ -492,10 +712,24 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
 
     # Sentences are loaded before the words are chosen, so that a word that
     # can be illustrated is preferred over one that cannot.
-    print("loading example sentences (Tanaka corpus) ...", flush=True)
+    print("reading example sentences (Tanaka corpus) ...", flush=True)
     candidate_texts = {v.text for words in vocab.values() for v in words}
-    sentences = load_sentences(paths["examples.utf.gz"], candidate_texts)
-    print(f"  sentences found for {len(sentences)} of {len(candidate_texts)} candidate words")
+    annotator = Annotator(furigana)
+    examples, sentence_ids = load_sentences(paths["examples.utf.gz"], candidate_texts, annotator)
+    complete = sum(1 for e in examples.values() if e.complete)
+    print(f"  {len(examples)} sentences for {len(sentence_ids)} words")
+    print(f"  {complete} ({complete / max(1, len(examples)):.0%}) fully furigana annotated")
+
+    print("linking French and Spanish translations (Tatoeba) ...", flush=True)
+    translations = load_translations(
+        paths["links.tar.bz2"],
+        {"fr": paths["fra_sentences.tsv.bz2"], "es": paths["spa_sentences.tsv.bz2"]},
+        set(examples),
+    )
+    for jid, extra in translations.items():
+        examples[jid].translations.update(extra)
+    have = {lang: sum(1 for e in examples.values() if lang in e.translations) for lang in LANGUAGES}
+    print("  translations: " + ", ".join(f"{k}={v}" for k, v in have.items()))
 
     print("selecting words ...", flush=True)
     levels_of = {char: k.level for char, k in all_kanji.items()}
@@ -503,7 +737,7 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
     chosen: dict[str, list[dict]] = {}
     for char, kanji in targets.items():
         chosen[char] = pick_words(
-            kanji, vocab.get(char, []), furigana, levels_of, sentences, stats[kanji.level]
+            kanji, vocab.get(char, []), furigana, levels_of, sentence_ids, stats[kanji.level]
         )
     print(f"  {len({w['t'] for ws in chosen.values() for w in ws})} distinct words chosen")
 
@@ -522,14 +756,40 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
                 stat.missing.append(char)
             stat.words += len(words)
 
+            # One example sentence per word, chosen for this level.
             has_sentence = False
+            level_rank = LEVELS.index(level)
+            used_ids: set[str] = set()
             for word in words:
-                found = sentences.get(word["t"])
-                if found:
-                    japanese, english = found[0]
-                    word["s"] = [japanese, english]
-                    stat.sentences += 1
-                    has_sentence = True
+                candidates = [
+                    examples[jid]
+                    for jid in sentence_ids.get(word["t"], ())
+                    if jid not in used_ids
+                ]
+                best = pick_sentence(candidates, level_rank, levels_of)
+                if best is None:
+                    continue
+                used_ids.add(best.jid)
+                word["s"] = {
+                    "t": best.text,
+                    "f": [[text, rt] for text, rt in best.furigana],
+                    "tr": {k: v for k, v in best.translations.items() if v},
+                }
+                stat.sentences += 1
+                if best.complete:
+                    stat.sentences_annotated += 1
+                too_hard = sum(
+                    1
+                    for ch in KANJI_RE.findall(best.text)
+                    if levels_of.get(ch) is None or LEVELS.index(levels_of[ch]) > level_rank
+                )
+                stat.above_level_kanji += too_hard
+                if not too_hard:
+                    stat.sentences_on_level += 1
+                for language in LANGUAGES:
+                    if language in best.translations:
+                        stat.translated[language] += 1
+                has_sentence = True
             if has_sentence:
                 stat.with_sentences += 1
 
@@ -552,7 +812,9 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
                 "JMdict (CC BY-SA 4.0, EDRDG)",
                 "JmdictFurigana (CC BY-SA 4.0)",
                 "Tanaka corpus (CC BY 2.0 FR)",
+                "Tatoeba (CC BY 2.0 FR)",
             ],
+            "languages": list(LANGUAGES),
             "kanji": records,
         }
         target = out_dir / f"{level}.json.gz"
@@ -577,11 +839,18 @@ def main(argv: list[str] | None = None) -> int:
 
     stats = build(args.levels, args.cache_dir, args.out_dir)
 
-    print("\nlevel  kanji  with words  with sentences  words  sentences")
+    print(
+        "\nlevel  kanji  words  sentences  furigana  on-level  too-hard"
+        "      en      fr      es"
+    )
     for level, stat in stats.items():
+        done = stat.sentences or 1
         print(
-            f"{level:>5} {stat.kanji:6d} {stat.with_words:11d} {stat.with_sentences:15d}"
-            f" {stat.words:6d} {stat.sentences:10d}"
+            f"{level:>5} {stat.kanji:6d} {stat.words:6d} {stat.sentences:10d}"
+            f" {stat.sentences_annotated / done:8.0%}"
+            f" {stat.sentences_on_level / done:9.0%}"
+            f" {stat.above_level_kanji / done:9.2f}"
+            + "".join(f" {stat.translated[lang] / done:7.0%}" for lang in LANGUAGES)
         )
         if stat.missing:
             shown = "".join(stat.missing[:20])

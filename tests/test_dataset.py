@@ -9,6 +9,7 @@ import random
 import unittest
 
 from mainichi.config import LEVELS
+from mainichi.content import Sentence
 from mainichi.dataset import BundledProvider, DataNotBuilt
 
 # What tools/build_data.py produced, and what the JLPT reconstruction says.
@@ -78,8 +79,50 @@ class TestBundledData(unittest.TestCase):
                     self.assertIn(record["k"], word["t"])
                     example = word.get("s")
                     if example is not None:
-                        self.assertEqual(len(example), 2)
-                        self.assertTrue(example[0] and example[1])
+                        self.assertTrue(example["t"])
+                        self.assertTrue(example["tr"].get("en"), "English is always present")
+                        # The furigana must spell the sentence back out.
+                        rebuilt = "".join(text for text, _rt in example["f"])
+                        self.assertEqual(rebuilt, example["t"], f"{level} {record['k']}")
+
+    def test_sentences_carry_furigana_and_languages(self):
+        card = self.provider.next_card("N5", "日")
+        for sentence in card.sentences:
+            with self.subTest(sentence=sentence.text):
+                self.assertTrue(sentence.furigana)
+                rebuilt = "".join(text for text, _rt in sentence.furigana)
+                self.assertEqual(rebuilt, sentence.text)
+                self.assertTrue(sentence.translations.get("en"))
+
+    def test_translation_falls_back_to_english(self):
+        english_only = Sentence(text="x", translations={"en": "hello"})
+        self.assertEqual(english_only.translation("fr"), ("hello", "en"))
+        both = Sentence(text="x", translations={"en": "hello", "fr": "bonjour"})
+        self.assertEqual(both.translation("fr"), ("bonjour", "fr"))
+        self.assertEqual(both.translation("en"), ("hello", "en"))
+
+    def test_sentences_prefer_kanji_at_or_below_the_level(self):
+        """N5 sentences must not be built out of N1 characters."""
+        levels = {}
+        for level in LEVELS:
+            for record in self.provider.load(level):
+                levels.setdefault(record["k"], level)
+
+        for level in ("N5", "N3"):
+            rank = LEVELS.index(level)
+            too_hard = total = 0
+            for record in self.provider.load(level):
+                for word in record.get("w", []):
+                    example = word.get("s")
+                    if not example:
+                        continue
+                    total += 1
+                    for char in example["t"]:
+                        found = levels.get(char)
+                        if found and LEVELS.index(found) > rank:
+                            too_hard += 1
+                            break
+            self.assertLess(too_hard / total, 0.55, f"{level}: sentences too hard")
 
     def test_card_conversion(self):
         card = self.provider.next_card("N5", "語")
