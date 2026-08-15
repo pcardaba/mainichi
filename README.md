@@ -2,9 +2,10 @@
 
 A kanji a day, stuck on your desktop like a post-it.
 
-> **Status: framework stage.** The window, the interaction model and the
-> architecture are in place. There is no kanji data yet, so the post-it shows
-> dashed placeholder zones where the content will go.
+> **Status:** the window, the interaction model and the kanji data are in
+> place. 2211 kanji across the five JLPT levels, each with common words per
+> reading, furigana, and example sentences. Stroke order animation and text
+> selection are not implemented yet.
 
 ## Requirements
 
@@ -37,10 +38,44 @@ Launch it several times for several post-its, or press `Ctrl+N` on one.
 | drag | move the note around the desktop |
 | drag the folded corner | resize the note |
 | right click | context menu (on-top, furigana, translation, colour, next, ...) |
+| left click outside the menu, or `Esc` | close the context menu |
 | `Space` | flip |
 | `Ctrl+N` / `Ctrl+W` / `Ctrl+Q` | new note / close note / quit |
 
 Closing the last post-it quits the application.
+
+## The data
+
+| Level | Kanji | Words | With an example sentence |
+| --- | ---: | ---: | ---: |
+| N5 | 79 | 266 | 231 |
+| N4 | 166 | 472 | 426 |
+| N3 | 367 | 1009 | 873 |
+| N2 | 367 | 826 | 691 |
+| N1 | 1232 | 2299 | 1560 |
+
+Each kanji carries its English meanings, its on and kun readings, and up to
+four common words — **one per reading of that kanji**, most common first —
+with the furigana aligned per character, so 日曜日 shows にち above 日, よう
+above 曜 and び above the last 日. Each word brings an example sentence with
+its English translation for the back of the note.
+
+The whole set is 448 KiB, gzipped JSON, one file per level, loaded lazily:
+showing an N5 note never reads the 1232 kanji of N1. **The application never
+uses the network.**
+
+To regenerate it (needs an internet connection, takes about ten seconds plus
+downloads):
+
+```bash
+python tools/build_data.py            # all levels
+python tools/build_data.py --levels N5
+```
+
+Data sources and their licences are listed in [ATTRIBUTION.md](ATTRIBUTION.md).
+Note that the generated data is CC BY-SA, while this code is Apache-2.0, and
+that the JLPT has published no official kanji lists since 2010 — the level
+assignment is a well established reconstruction, not an official list.
 
 ## Architecture
 
@@ -49,22 +84,27 @@ mainichi/
 ├── cli.py          argument parsing, builds an AppConfig
 ├── config.py       AppConfig (launch) + PostItOptions (per-note, menu toggles)
 ├── content.py      KanjiCard / Word / Sentence + the CardProvider protocol
+├── dataset.py      BundledProvider: reads mainichi/data, deals shuffled decks
+├── data/           N5.json.gz ... N1.json.gz, generated, committed
 ├── app.py          MainichiApp: owns the Tk root and every open post-it
 └── ui/
     ├── postit.py   PostItWindow: borderless window, canvas drawing, input
     ├── theme.py    Palette + the six post-it colours
     └── fonts.py    finds a Japanese capable font family per platform
+tools/
+└── build_data.py   downloads the open data sets and builds mainichi/data
 ```
 
-The presentation layer only ever reads a `KanjiCard` and only ever asks a
-`CardProvider` for the next one. Today the sole provider is
-`PlaceholderProvider`, which returns empty cards; a real one (bundled JLPT
-lists, KANJIDIC, an online lookup) drops in without touching `ui/`.
+The presentation layer only ever reads a `KanjiCard` and asks a
+`CardProvider` for the next one, so swapping the bundled data for an online
+lookup would not touch `ui/`.
 
 ## Not implemented yet
 
-* kanji data for the five JLPT levels, and the random pick within a level
-* words, readings, furigana rendering as real ruby text, example sentences
 * **Traces**: stroke order animation (menu entry present but disabled)
 * **Copy**: text selection and `Ctrl+C` (menu entry present but disabled)
+* furigana on the example sentences (the words have it; sentences would need
+  a morphological analyser, which means a dependency)
 * persisting position, size, colour and options between runs
+* 20 of the N1 kanji are used almost only in names and have no common word;
+  those notes show the readings instead

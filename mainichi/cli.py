@@ -95,6 +95,23 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(str(exc))
         return 2  # unreachable, parser.error exits
 
+    # Check the kanji is actually in the data before opening a window.
+    provider = None
+    if kanji:
+        from mainichi.dataset import BundledProvider, DataNotBuilt
+
+        try:
+            provider = BundledProvider()
+            if provider.find(kanji) is None:
+                print(
+                    f"mainichi: {kanji} is not in the JLPT kanji data (N5-N1).",
+                    file=sys.stderr,
+                )
+                return 1
+        except DataNotBuilt as exc:
+            print(f"mainichi: {exc}", file=sys.stderr)
+            return 1
+
     config = AppConfig(
         level=args.level,
         kanji=kanji,
@@ -110,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     from mainichi.app import MainichiApp
 
     try:
-        app = MainichiApp(config)
+        app = MainichiApp(config, provider=provider)
     except tk.TclError as exc:
         print(f"mainichi: cannot open a window ({exc})", file=sys.stderr)
         return 1

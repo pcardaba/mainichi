@@ -249,7 +249,14 @@ class PostItWindow:
         self.redraw()
 
     def next_card(self) -> None:
-        self.card = self.app.provider.next_card(self.app.config.level, self.app.config.kanji)
+        """Move on to another kanji of the level currently being shown.
+
+        A note launched with an explicit ``--kanji`` continues with random
+        kanji from that kanji's own level: asking for the next one and being
+        given the same character again would be useless.
+        """
+        level = self.card.level or self.app.config.level
+        self.card = self.app.provider.next_card(level)
         self.face = RECTO
         self.redraw()
 
@@ -394,29 +401,112 @@ class PostItWindow:
 
         # Words row: one slot per reading, most common on the left.
         row_top, row_bottom = int(h * 0.62), int(h * 0.87)
-        slots = max(1, len(self.card.words) or 3)
-        gap = max(4, int(6 * scale))
-        slot_w = (w - 2 * pad - gap * (slots - 1)) / slots
-        for i in range(slots):
-            x0 = pad + i * (slot_w + gap)
-            x1 = x0 + slot_w
-            if self.card.is_placeholder:
-                self._zone(x0, row_top, x1, row_bottom, "word", scale)
-            else:
-                word = self.card.words[i]
-                if self.options.show_furigana and word.reading:
-                    c.create_text(
-                        (x0 + x1) / 2, row_top,
-                        text=word.reading, anchor="n",
-                        fill=pal.ink_soft, font=self.app.fonts.jp(max(7, int(10 * scale))),
+        if not self.card.is_placeholder and not self.card.words:
+            # A handful of kanji (mostly used only in names) have no common
+            # vocabulary: show the readings rather than an empty note.
+            self._draw_readings(w, h, scale, row_top, row_bottom)
+        else:
+            slots = max(1, len(self.card.words) or 3)
+            gap = max(4, int(6 * scale))
+            slot_w = (w - 2 * pad - gap * (slots - 1)) / slots
+            for i in range(slots):
+                x0 = pad + i * (slot_w + gap)
+                x1 = x0 + slot_w
+                if self.card.is_placeholder:
+                    self._zone(x0, row_top, x1, row_bottom, "word", scale)
+                else:
+                    self._draw_word(
+                        self.card.words[i],
+                        (x0 + x1) / 2,
+                        row_top,
+                        slot_w,
+                        row_bottom - row_top,
+                        scale,
                     )
-                c.create_text(
-                    (x0 + x1) / 2, (row_top + row_bottom) / 2,
-                    text=word.text, anchor="center",
-                    fill=pal.ink, font=self.app.fonts.jp(max(10, int(16 * scale))),
-                )
 
         self._draw_footer(w, h, scale, "click to flip · right-click for options")
+
+    def _draw_word(
+        self,
+        word,
+        centre_x: float,
+        top_y: float,
+        max_width: float,
+        max_height: float,
+        scale: float,
+    ) -> None:
+        """Draw one word with its furigana sitting over the right characters.
+
+        ``word.furigana`` aligns each character with its reading, so 日曜日
+        gets にち above 日, よう above 曜 and び above the second 日, instead
+        of the whole reading floating over the middle of the word.
+        """
+        pal = self.palette
+        c = self.canvas
+        fonts = self.app.fonts
+        segments = word.furigana or ((word.text, word.reading),)
+        show_ruby = self.options.show_furigana and any(rt for _, rt in segments)
+
+        # Shrink until the word fits its slot: a four character compound in a
+        # narrow note would otherwise run into its neighbour.
+        size = max(9, int(17 * scale))
+        while size > 7:
+            main = fonts.measurable(fonts.jp(size))
+            widths = [main.measure(ruby) for ruby, _ in segments]
+            if sum(widths) <= max_width:
+                break
+            size -= 1
+
+        main = fonts.measurable(fonts.jp(size))
+        widths = [main.measure(ruby) for ruby, _ in segments]
+        ruby_size = max(6, int(size * 0.5))
+        ruby_font = fonts.jp(ruby_size)
+        ruby_height = ruby_size + 2 if show_ruby else 0
+
+        # Centre the whole word, then walk along it character by character.
+        x = centre_x - sum(widths) / 2
+        baseline = top_y + ruby_height
+        for (ruby, rt), width in zip(segments, widths):
+            if show_ruby and rt:
+                c.create_text(
+                    x + width / 2, top_y,
+                    text=rt, anchor="n",
+                    fill=pal.ink_soft, font=ruby_font,
+                )
+            c.create_text(
+                x + width / 2, baseline,
+                text=ruby, anchor="n",
+                fill=pal.ink, font=fonts.jp(size),
+            )
+            x += width
+
+        # The English gloss, as much of it as the slot can take.
+        if word.meaning:
+            c.create_text(
+                centre_x, baseline + size * 1.5,
+                text=word.meaning.split(";")[0].strip(),
+                anchor="n",
+                fill=pal.ink_soft,
+                font=fonts.ui(max(6, int(8 * scale))),
+                width=max_width,
+                justify="center",
+            )
+
+    def _draw_readings(self, w: int, h: int, scale: float, top: int, bottom: int) -> None:
+        """Fallback for a kanji with no vocabulary: show its readings."""
+        pal = self.palette
+        parts = []
+        if self.card.on_readings:
+            parts.append("　".join(self.card.on_readings[:3]))
+        if self.card.kun_readings:
+            parts.append("　".join(r.strip("-") for r in self.card.kun_readings[:3]))
+        self.canvas.create_text(
+            w / 2, (top + bottom) / 2,
+            text="\n".join(parts),
+            fill=pal.ink_soft,
+            font=self.app.fonts.jp(max(9, int(12 * scale))),
+            justify="center",
+        )
 
     def _draw_verso(self, w: int, h: int, scale: float) -> None:
         """Back: meaning of the kanji and one example sentence per word."""
@@ -439,33 +529,43 @@ class PostItWindow:
                 justify="center",
             )
 
-        rows = max(1, len(self.card.sentences) or 3)
-        top, bottom = int(h * 0.36), int(h * 0.88)
-        gap = max(4, int(6 * scale))
-        row_h = (bottom - top - gap * (rows - 1)) / rows
-        for i in range(rows):
-            y0 = top + i * (row_h + gap)
-            y1 = y0 + row_h
-            if self.card.is_placeholder:
-                self._zone(pad, y0, w - pad, y1, "sentence", scale)
-            else:
-                sentence = self.card.sentences[i]
-                item = c.create_text(
-                    pad, y0,
+        top, floor = int(h * 0.36), int(h * 0.90)
+        gap = max(5, int(7 * scale))
+
+        if self.card.is_placeholder:
+            rows = 3
+            row_h = (floor - top - gap * (rows - 1)) / rows
+            for i in range(rows):
+                y0 = top + i * (row_h + gap)
+                self._zone(pad, y0, w - pad, y0 + row_h, "sentence", scale)
+        else:
+            # Sentences are stacked in the order of the words on the recto,
+            # each one followed by its own translation. They are laid out as
+            # they come rather than in fixed rows, because sentence lengths
+            # differ wildly and empty rows look like something is missing.
+            text_width = w - 2 * pad
+            y = float(top)
+            for sentence in self.card.sentences:
+                drawn = [c.create_text(
+                    pad, y,
                     text=sentence.text, anchor="nw",
                     fill=pal.ink, font=self.app.fonts.jp(max(9, int(12 * scale))),
-                    width=w - 2 * pad,
-                )
+                    width=text_width,
+                )]
+                y = c.bbox(drawn[0])[3]
                 if self.options.show_translation and sentence.translation:
-                    # Sit right under this sentence (which may have wrapped),
-                    # not at the bottom of the row: otherwise the translation
-                    # looks like it belongs to the next sentence.
-                    bottom = c.bbox(item)[3]
-                    c.create_text(
-                        pad, bottom + max(1, int(2 * scale)),
+                    # Directly under its own sentence, so the pairing is clear.
+                    drawn.append(c.create_text(
+                        pad, y + max(1, int(2 * scale)),
                         text=sentence.translation, anchor="nw",
                         fill=pal.ink_soft, font=self.app.fonts.ui(max(7, int(9 * scale))),
-                        width=w - 2 * pad,
-                    )
+                        width=text_width,
+                    ))
+                    y = c.bbox(drawn[-1])[3]
+                if y > floor:  # ran off the note: drop this one and stop
+                    for item in drawn:
+                        c.delete(item)
+                    break
+                y += gap
 
         self._draw_footer(w, h, scale, "click to flip back")

@@ -27,5 +27,8 @@ mainichi = "mainichi.cli:main"
 [project.urls]
 Homepage = "https://github.com/pcardaba/mainichi"
 
+[tool.setuptools.package-data]
+mainichi = ["data/*.json.gz"]
+
 [tool.setuptools.packages.find]
 include = ["mainichi*"]

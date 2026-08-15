@@ -20,6 +20,10 @@ class Word:
     text: str  # e.g. 日本
     reading: str  # furigana for the whole word, e.g. にほん
     meaning: str = ""  # e.g. "Japan"
+    # Per-character alignment, e.g. 日曜日 -> (("日","にち"),("曜","よう"),("日","び")).
+    # Kana characters carry an empty reading. This is what lets the ruby text
+    # sit over the right character instead of over the whole word.
+    furigana: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

@@ -68,6 +68,7 @@ class FontBook:
     """Resolves the families once and hands out sized font tuples."""
 
     def __init__(self) -> None:
+        self._measurable: dict[tuple[str, int, str], tkfont.Font] = {}
         available = set(tkfont.families())
         self.jp_family = self._first_available(_JP_CANDIDATES, available)
         self.jp_is_guess = self.jp_family is None
@@ -99,3 +100,10 @@ class FontBook:
     def ui(self, size: int, weight: str = "normal") -> tuple[str, int, str]:
         """Latin UI font for labels, hints and scaffolding text."""
         return (self.ui_family, max(6, size), weight)
+
+    def measurable(self, spec: tuple[str, int, str]) -> tkfont.Font:
+        """A real Font object, needed to place ruby over the right character."""
+        if spec not in self._measurable:
+            family, size, weight = spec
+            self._measurable[spec] = tkfont.Font(family=family, size=size, weight=weight)
+        return self._measurable[spec]

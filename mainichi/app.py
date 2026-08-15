@@ -7,6 +7,7 @@ import tkinter as tk
 
 from mainichi.config import AppConfig
 from mainichi.content import CardProvider, PlaceholderProvider
+from mainichi.dataset import BundledProvider, DataNotBuilt
 from mainichi.ui.fonts import FontBook
 from mainichi.ui.postit import PostItWindow
 
@@ -20,7 +21,7 @@ class MainichiApp:
 
     def __init__(self, config: AppConfig, provider: CardProvider | None = None) -> None:
         self.config = config
-        self.provider: CardProvider = provider or PlaceholderProvider()
+        self.provider: CardProvider = provider or self._default_provider()
 
         self.root = tk.Tk()
         self.root.withdraw()  # the root is never shown; post-its are Toplevels
@@ -36,6 +37,22 @@ class MainichiApp:
 
         self.postits: list[PostItWindow] = []
         self._spawned = 0
+
+    @staticmethod
+    def _default_provider() -> CardProvider:
+        """The bundled data, or empty notes if it has not been built."""
+        try:
+            provider = BundledProvider()
+            if provider.available():
+                return provider
+            raise DataNotBuilt("no data files")
+        except DataNotBuilt as exc:
+            print(
+                f"mainichi: {exc}\n"
+                "          showing empty notes. Run: python tools/build_data.py",
+                file=sys.stderr,
+            )
+            return PlaceholderProvider()
 
     # ------------------------------------------------------------- post-its
 
