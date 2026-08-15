@@ -113,7 +113,9 @@ class PostItWindow:
         w.bind("<Control-n>", lambda _e: self.app.spawn_postit())
         w.bind("<Control-w>", lambda _e: self.close())
         w.bind("<Control-q>", lambda _e: self.app.quit())
-        w.bind("<Escape>", lambda _e: self.close())
+        # Escape only ever dismisses the context menu. It must not close the
+        # note: an unposted menu would otherwise take the whole post-it away.
+        w.bind("<Escape>", self._dismiss_menu)
         w.protocol("WM_DELETE_WINDOW", self.close)
 
     def _build_menu(self) -> None:
@@ -146,6 +148,12 @@ class PostItWindow:
         m.add_command(label="New post-it", accelerator="Ctrl+N", command=self.app.spawn_postit)
         m.add_command(label="Close this post-it", accelerator="Ctrl+W", command=self.close)
         m.add_command(label="Quit mainichi", accelerator="Ctrl+Q", command=self.app.quit)
+
+        # Escape closes the menu wherever the keyboard focus happens to be,
+        # and the grab is dropped as soon as the menu is off screen.
+        for menu in (m, colours):
+            menu.bind("<Escape>", self._dismiss_menu)
+            menu.bind("<Unmap>", lambda _e: m.grab_release())
         self.menu = m
 
     # -------------------------------------------------------------- behaviour
@@ -165,7 +173,18 @@ class PostItWindow:
             return
         self.canvas.configure(cursor="bottom_right_corner" if self._in_fold(event.x, event.y) else "hand2")
 
-    def _on_press(self, event: tk.Event) -> None:
+    def _menu_is_open(self) -> bool:
+        try:
+            return bool(self.menu.winfo_ismapped())
+        except tk.TclError:  # pragma: no cover - menu already gone
+            return False
+
+    def _on_press(self, event: tk.Event) -> str | None:
+        # A click while the menu is up only dismisses it: it should not also
+        # flip the note or start a drag.
+        if self._menu_is_open():
+            self._dismiss_menu()
+            return "break"
         self.win.focus_force()
         self._moved = False
         w, h, x, y = self.geometry_tuple()
@@ -175,6 +194,7 @@ class PostItWindow:
         else:
             self._resize_origin = None
             self._drag_origin = (event.x_root - x, event.y_root - y)
+        return None
 
     def _on_motion(self, event: tk.Event) -> None:
         if self._resize_origin is not None:
@@ -199,10 +219,30 @@ class PostItWindow:
             self.flip()
 
     def _on_context_menu(self, event: tk.Event) -> None:
+        """Post the context menu under the pointer.
+
+        The grab that ``tk_popup`` takes is deliberately kept: it is what
+        makes a click anywhere outside the menu dismiss it. Releasing it
+        straight away (the usual Tkinter snippet) leaves the menu stuck on
+        screen. It is released again when the menu unmaps, and by
+        :meth:`_dismiss_menu`.
+
+        The keyboard focus is taken first: a borderless window is never given
+        the focus by the window manager, so otherwise the Escape key goes to
+        whichever window happens to hold the focus instead of to the menu.
+        """
+        self.win.focus_force()
+        self.menu.tk_popup(event.x_root, event.y_root)
+        self.menu.focus_set()
+
+    def _dismiss_menu(self, _event: tk.Event | None = None) -> str:
+        """Take the context menu down; harmless when none is posted."""
         try:
-            self.menu.tk_popup(event.x_root, event.y_root)
-        finally:
+            self.menu.unpost()
             self.menu.grab_release()
+        except tk.TclError:  # pragma: no cover - menu already gone
+            pass
+        return "break"
 
     def flip(self) -> None:
         self.face = VERSO if self.face == RECTO else RECTO
