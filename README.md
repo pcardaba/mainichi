@@ -4,8 +4,8 @@ A kanji a day, stuck on your desktop like a post-it.
 
 > **Status:** the window, the interaction model and the kanji data are in
 > place. 2211 kanji across the five JLPT levels, each with common words per
-> reading, furigana, and example sentences. Stroke order animation and text
-> selection are not implemented yet.
+> reading, furigana, and example sentences. Text can be selected and copied.
+> Stroke order animation is not implemented yet.
 
 ## Requirements
 
@@ -35,11 +35,14 @@ Launch it several times for several post-its, or press `Ctrl+N` on one.
 
 | Action | Result |
 | --- | --- |
-| left click | flip between recto (kanji + words) and verso (meaning + sentences) |
-| drag | move the note around the desktop |
+| left click on text | select that word or sentence; drag to extend over several |
+| left click on blank paper | clear the selection |
+| double click | flip between recto (kanji + words) and verso (meaning + sentences) |
+| drag the blank paper | move the note around the desktop |
 | drag the folded corner | resize the note |
 | right click | context menu (on-top, furigana, translation, language, colour, next, ...) |
 | left click outside the menu, or `Esc` | close the context menu |
+| `Ctrl+C` / `Ctrl+A` | copy the selection / select everything on this side |
 | `Space` | flip |
 | `Ctrl+N` / `Ctrl+W` / `Ctrl+Q` | new note / close note / quit |
 
@@ -111,11 +114,17 @@ The presentation layer only ever reads a `KanjiCard` and asks a
 `CardProvider` for the next one, so swapping the bundled data for an online
 lookup would not touch `ui/`.
 
+## Copying text
+
+Click a word or a sentence to select it, drag to take in several, then
+`Ctrl+C` or right click and **Copy**. **Furigana is never copied**: the
+clipboard gets 日本, not にほん, so what you paste elsewhere is the text as
+written. On X11 the clipboard is owned by the running application, so paste
+before closing the last note.
+
 ## Not implemented yet
 
 * **Traces**: stroke order animation (menu entry present but disabled)
-* **Copy**: text selection and `Ctrl+C` (menu entry present but disabled).
-  Left click still flips the note; that will change when selection lands
 * persisting position, size, colour and options between runs
 * 20 of the N1 kanji are used almost only in names and have no common word;
   those notes show the readings instead

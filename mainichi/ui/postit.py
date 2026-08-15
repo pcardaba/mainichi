@@ -6,9 +6,10 @@ on the paper itself, exactly like a real post-it.
 
 Interaction
 -----------
-* drag anywhere            -> move the note
+* click / drag on text     -> select a word, a sentence, or a run of them
+* drag the blank paper     -> move the note
 * drag the folded corner   -> resize the note
-* left click (no drag)     -> flip recto/verso
+* double click             -> flip recto/verso
 * right click              -> context menu
 """
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mainichi.config import LANGUAGES, MIN_SIZE, PostItOptions
@@ -29,6 +31,22 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _BASE_W, _BASE_H = 300, 340
 
 RECTO, VERSO = "recto", "verso"
+
+
+@dataclass(slots=True)
+class _Region:
+    """A stretch of text on the paper that can be selected and copied.
+
+    Selection works on whole words and sentences rather than on individual
+    characters: that is the unit worth copying out of a post-it, and it stays
+    easy to hit on a note a few hundred pixels wide.
+    """
+
+    text: str
+    boxes: list[tuple[float, float, float, float]]  # one per line of text
+
+    def hit(self, x: float, y: float) -> bool:
+        return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in self.boxes)
 
 
 class PostItWindow:
@@ -52,6 +70,13 @@ class PostItWindow:
         self._drag_origin: tuple[int, int] | None = None
         self._resize_origin: tuple[int, int, int, int] | None = None
         self._moved = False
+
+        # Text selection. Regions are rebuilt on every redraw, in a stable
+        # order, so the selection survives a resize or a colour change.
+        self._regions: list[_Region] = []
+        self._selection: set[int] = set()
+        self._select_anchor: int | None = None
+        self._items: list[int] = []  # items drawn since the last region mark
 
         self.win = tk.Toplevel(app.root)
         self.win.withdraw()
@@ -129,12 +154,17 @@ class PostItWindow:
         c.bind("<Button-1>", self._on_press)
         c.bind("<B1-Motion>", self._on_motion)
         c.bind("<ButtonRelease-1>", self._on_release)
+        c.bind("<Double-Button-1>", self._on_double_click)
         c.bind("<Button-3>", self._on_context_menu)
         c.bind("<Configure>", lambda _e: self.redraw())
         c.bind("<Motion>", self._on_hover)
 
         w = self.win
         w.bind("<space>", lambda _e: self.flip())
+        w.bind("<Control-c>", self.copy_selection)
+        w.bind("<Control-C>", self.copy_selection)
+        w.bind("<Control-a>", lambda _e: self.select_all())
+        w.bind("<Control-A>", lambda _e: self.select_all())
         w.bind("<Control-n>", lambda _e: self.app.spawn_postit())
         w.bind("<Control-w>", lambda _e: self.close())
         w.bind("<Control-q>", lambda _e: self.app.quit())
@@ -156,8 +186,9 @@ class PostItWindow:
         m.add_checkbutton(label="Furigana", variable=self._var_furigana, command=self._toggle_furigana)
         m.add_checkbutton(label="Translation", variable=self._var_translation, command=self._toggle_translation)
         m.add_separator()
-        m.add_command(label="Copy", accelerator="Ctrl+C", state="disabled")  # needs selectable text
-        m.add_command(label="Flip", accelerator="Space", command=self.flip)
+        m.add_command(label="Copy", accelerator="Ctrl+C", command=self.copy_selection)
+        m.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
+        m.add_command(label="Flip", accelerator="Double click", command=self.flip)
         m.add_command(label="Next kanji", command=self.next_card)
 
         languages = tk.Menu(m, tearoff=0)
@@ -205,9 +236,21 @@ class PostItWindow:
         return x >= w - fold and y >= h - fold
 
     def _on_hover(self, event: tk.Event) -> None:
-        if self.app.config.decorated:
-            return
-        self.canvas.configure(cursor="bottom_right_corner" if self._in_fold(event.x, event.y) else "hand2")
+        if not self.app.config.decorated and self._in_fold(event.x, event.y):
+            self.canvas.configure(cursor="bottom_right_corner")
+        elif self._region_at(event.x, event.y) is not None:
+            self.canvas.configure(cursor="xterm")  # this text can be selected
+        else:
+            self.canvas.configure(cursor="" if self.app.config.decorated else "hand2")
+
+    def _on_double_click(self, _event: tk.Event) -> str:
+        """Flip the note.
+
+        Flipping used to be a single left click, but that made selecting
+        text impossible: every attempt to select turned the note over.
+        """
+        self.flip()
+        return "break"
 
     def _menu_is_open(self) -> bool:
         try:
@@ -217,7 +260,7 @@ class PostItWindow:
 
     def _on_press(self, event: tk.Event) -> str | None:
         # A click while the menu is up only dismisses it: it should not also
-        # flip the note or start a drag.
+        # start a drag or change the selection.
         if self._menu_is_open():
             self._dismiss_menu()
             return "break"
@@ -226,16 +269,40 @@ class PostItWindow:
         self.win.lift()
         self.win.focus_force()
         self._moved = False
+        self._resize_origin = self._drag_origin = None
+        self._select_anchor = None
+
         w, h, x, y = self.geometry_tuple()
         if self._in_fold(event.x, event.y) and not self.app.config.decorated:
             self._resize_origin = (event.x_root, event.y_root, w, h)
-            self._drag_origin = None
-        else:
-            self._resize_origin = None
-            self._drag_origin = (event.x_root - x, event.y_root - y)
+            return None
+
+        hit = self._region_at(event.x, event.y)
+        if hit is not None:
+            # Pressing on text starts a selection; the note is moved by
+            # dragging the blank paper around it.
+            self._select_anchor = hit
+            self._selection = {hit}
+            self.redraw()
+            return None
+
+        if self._selection:
+            self.clear_selection()
+        self._drag_origin = (event.x_root - x, event.y_root - y)
         return None
 
     def _on_motion(self, event: tk.Event) -> None:
+        if self._select_anchor is not None:
+            # Extend the selection over every region between the one the
+            # drag started on and the one under the pointer.
+            hit = self._region_at(event.x, event.y)
+            if hit is not None:
+                low, high = sorted((self._select_anchor, hit))
+                wanted = set(range(low, high + 1))
+                if wanted != self._selection:
+                    self._selection = wanted
+                    self.redraw()
+            return
         if self._resize_origin is not None:
             sx, sy, sw, sh = self._resize_origin
             new_w = max(self.MIN_W, sw + (event.x_root - sx))
@@ -251,14 +318,15 @@ class PostItWindow:
             self.win.geometry(f"+{nx}+{ny}")
 
     def _on_release(self, _event: tk.Event) -> None:
-        was_drag = self._moved
         self._drag_origin = self._resize_origin = None
+        self._select_anchor = None
         self._moved = False
-        if not was_drag:
-            self.flip()
 
     def _on_context_menu(self, event: tk.Event) -> None:
-        """Post the context menu under the pointer.
+        """Post the context menu under the pointer, over the selection.
+
+        Right-clicking on text that is not selected selects it first, so
+        that "select, right click, Copy" works in one gesture.
 
         The grab that ``tk_popup`` takes is deliberately kept: it is what
         makes a click anywhere outside the menu dismiss it. Releasing it
@@ -270,6 +338,13 @@ class PostItWindow:
         the focus by the window manager, so otherwise the Escape key goes to
         whichever window happens to hold the focus instead of to the menu.
         """
+        hit = self._region_at(event.x, event.y)
+        if hit is not None and hit not in self._selection:
+            self._selection = {hit}
+            self.redraw()
+        self.menu.entryconfigure(
+            "Copy", state="normal" if self._selection else "disabled"
+        )
         self.win.focus_force()
         self.menu.tk_popup(event.x_root, event.y_root)
         self.menu.focus_set()
@@ -285,6 +360,8 @@ class PostItWindow:
 
     def flip(self) -> None:
         self.face = VERSO if self.face == RECTO else RECTO
+        self._selection.clear()  # the other side has entirely different text
+        self._select_anchor = None
         self.redraw()
 
     def next_card(self) -> None:
@@ -297,6 +374,8 @@ class PostItWindow:
         level = self.card.level or self.app.config.level
         self.card = self.app.provider.next_card(level)
         self.face = RECTO
+        self._selection.clear()
+        self._select_anchor = None
         self.redraw()
 
     def set_palette(self, name: str) -> None:
@@ -345,6 +424,87 @@ class PostItWindow:
         self.app.forget_postit(self)
         self.win.destroy()
 
+    # -------------------------------------------------------------- selection
+
+    def _text(self, *args, **kwargs) -> int:
+        """create_text that also records the item for the region being built."""
+        item = self.canvas.create_text(*args, **kwargs)
+        self._items.append(item)
+        return item
+
+    def _mark(self) -> None:
+        """Start collecting the items that will make up the next region."""
+        self._items = []
+
+    def _region(self, text: str, boxes: list[tuple[float, float, float, float]] | None = None) -> None:
+        """Close the current region, covering everything drawn since _mark."""
+        if not text:
+            self._items = []
+            return
+        if boxes is None:
+            spans = [self.canvas.bbox(item) for item in self._items]
+            spans = [b for b in spans if b]
+            if not spans:
+                self._items = []
+                return
+            boxes = [(
+                min(b[0] for b in spans),
+                min(b[1] for b in spans),
+                max(b[2] for b in spans),
+                max(b[3] for b in spans),
+            )]
+        self._regions.append(_Region(text=text, boxes=boxes))
+        self._items = []
+
+    def _draw_selection(self) -> None:
+        """Paint the highlight behind every selected region."""
+        pal = self.palette
+        for index in sorted(self._selection):
+            if index >= len(self._regions):
+                continue
+            for x0, y0, x1, y1 in self._regions[index].boxes:
+                rect = self.canvas.create_rectangle(
+                    x0 - 2, y0 - 1, x1 + 2, y1 + 1,
+                    fill=pal.select, outline="",
+                )
+                self.canvas.tag_lower(rect)  # behind the text it highlights
+
+    def _region_at(self, x: float, y: float) -> int | None:
+        for index, region in enumerate(self._regions):
+            if region.hit(x, y):
+                return index
+        return None
+
+    def selected_text(self) -> str:
+        """The selection, in the order it appears on the paper.
+
+        Never includes furigana: a region holds the text as written (日本),
+        not the reading drawn above it (にほん), so what gets pasted into
+        another application is the word or sentence itself.
+        """
+        return "\n".join(
+            self._regions[i].text for i in sorted(self._selection) if i < len(self._regions)
+        )
+
+    def clear_selection(self) -> None:
+        if self._selection:
+            self._selection.clear()
+            self._select_anchor = None
+            self.redraw()
+
+    def select_all(self) -> str:
+        self._selection = set(range(len(self._regions)))
+        self.redraw()
+        return "break"
+
+    def copy_selection(self, _event: tk.Event | None = None) -> str:
+        """Put the selection on the clipboard, for pasting anywhere else."""
+        text = self.selected_text()
+        if text:
+            self.win.clipboard_clear()
+            self.win.clipboard_append(text)
+        return "break"
+
     # ---------------------------------------------------------------- drawing
 
     def redraw(self) -> None:
@@ -358,12 +518,15 @@ class PostItWindow:
         c.configure(bg=pal.paper)
         scale = min(w / _BASE_W, h / _BASE_H)
 
+        self._regions = []
+        self._items = []
         self._draw_paper(w, h)
         if self.face == RECTO:
             self._draw_recto(w, h, scale)
         else:
             self._draw_verso(w, h, scale)
         self._draw_fold(w, h)
+        self._draw_selection()
 
     def _draw_paper(self, w: int, h: int) -> None:
         """Paper edge plus the glued strip along the top."""
@@ -436,13 +599,15 @@ class PostItWindow:
         if self.card.is_placeholder:
             self._zone(*kanji_box, "kanji", scale)
         else:
-            c.create_text(
+            self._mark()
+            self._text(
                 w / 2,
                 (kanji_box[1] + kanji_box[3]) / 2,
                 text=self.card.kanji,
                 fill=pal.ink,
                 font=self.app.fonts.jp(max(24, int((kanji_box[3] - kanji_box[1]) * 0.82))),
             )
+            self._region(self.card.kanji)
 
         # Words row: one slot per reading, most common on the left.
         row_top, row_bottom = int(h * 0.62), int(h * 0.87)
@@ -469,7 +634,7 @@ class PostItWindow:
                         scale,
                     )
 
-        self._draw_footer(w, h, scale, "click to flip · right-click for options")
+        self._draw_footer(w, h, scale, "double-click to flip · right-click for options")
 
     def _draw_word(
         self,
@@ -511,31 +676,36 @@ class PostItWindow:
         # Centre the whole word, then walk along it character by character.
         x = centre_x - sum(widths) / 2
         baseline = top_y + ruby_height
+        self._mark()
         for (ruby, rt), width in zip(segments, widths):
             if show_ruby and rt:
-                c.create_text(
+                self._text(
                     x + width / 2, top_y,
                     text=rt, anchor="n",
                     fill=pal.ink_soft, font=ruby_font,
                 )
-            c.create_text(
+            self._text(
                 x + width / 2, baseline,
                 text=ruby, anchor="n",
                 fill=pal.ink, font=fonts.jp(size),
             )
             x += width
+        self._region(word.text)
 
         # The English gloss, as much of it as the slot can take.
         if word.meaning:
-            c.create_text(
+            gloss = word.meaning.split(";")[0].strip()
+            self._mark()
+            self._text(
                 centre_x, baseline + size * 1.5,
-                text=word.meaning.split(";")[0].strip(),
+                text=gloss,
                 anchor="n",
                 fill=pal.ink_soft,
                 font=fonts.ui(max(6, int(8 * scale))),
                 width=max_width,
                 justify="center",
             )
+            self._region(gloss)
 
     # Japanese line breaking: these may not begin a line (kinsoku shori).
     _NO_LINE_START = "。、）」』？！ぁぃぅぇぉっゃゅょゎヽヾー・"
@@ -547,8 +717,9 @@ class PostItWindow:
         top: float,
         max_width: float,
         size: int,
-    ) -> float:
-        """Draw furigana'd Japanese that wraps, and return the y below it.
+    ) -> tuple[float, list[tuple[float, float, float, float]]]:
+        """Draw furigana'd Japanese that wraps; return the y below it and the
+        box of each line, which is what the selection highlight uses.
 
         Tk can wrap a plain string on its own, but not with ruby sitting over
         individual characters, so the line breaking is done here: every
@@ -580,15 +751,20 @@ class PostItWindow:
                     cells.append((char, "", main.measure(char)))
 
         x, y = left, top
+        boxes: list[tuple[float, float, float, float]] = []
+        line_start = left
         for text, rt, width in cells:
             if x + width > left + max_width and x > left and text[0] not in self._NO_LINE_START:
+                boxes.append((line_start, y, x, y + line_height))
                 x = left
                 y += line_height
             if rt:
-                c.create_text(x + width / 2, y, text=rt, anchor="n", fill=pal.ink_soft, font=ruby_spec)
-            c.create_text(x + width / 2, y + ruby_height, text=text, anchor="n", fill=pal.ink, font=main_spec)
+                self._text(x + width / 2, y, text=rt, anchor="n", fill=pal.ink_soft, font=ruby_spec)
+            self._text(x + width / 2, y + ruby_height, text=text, anchor="n", fill=pal.ink, font=main_spec)
             x += width
-        return y + line_height
+        if x > line_start:
+            boxes.append((line_start, y, x, y + line_height))
+        return y + line_height, boxes
 
     def _draw_readings(self, w: int, h: int, scale: float, top: int, bottom: int) -> None:
         """Fallback for a kanji with no vocabulary: show its readings."""
@@ -598,13 +774,16 @@ class PostItWindow:
             parts.append("　".join(self.card.on_readings[:3]))
         if self.card.kun_readings:
             parts.append("　".join(r.strip("-") for r in self.card.kun_readings[:3]))
-        self.canvas.create_text(
+        readings = "\n".join(parts)
+        self._mark()
+        self._text(
             w / 2, (top + bottom) / 2,
-            text="\n".join(parts),
+            text=readings,
             fill=pal.ink_soft,
             font=self.app.fonts.jp(max(9, int(12 * scale))),
             justify="center",
         )
+        self._region(readings)
 
     def _draw_verso(self, w: int, h: int, scale: float) -> None:
         """Back: meaning of the kanji and one example sentence per word."""
@@ -617,15 +796,18 @@ class PostItWindow:
         if self.card.is_placeholder:
             self._zone(*meaning_box, "meaning", scale)
         else:
-            c.create_text(
+            meanings = ", ".join(self.card.meanings)
+            self._mark()
+            self._text(
                 w / 2,
                 (meaning_box[1] + meaning_box[3]) / 2,
-                text=", ".join(self.card.meanings),
+                text=meanings,
                 fill=pal.ink,
                 font=self.app.fonts.ui(max(10, int(14 * scale)), "bold"),
                 width=w - 2 * pad,
                 justify="center",
             )
+            self._region(meanings)
 
         top, floor = int(h * 0.36), int(h * 0.90)
         gap = max(5, int(7 * scale))
@@ -644,30 +826,37 @@ class PostItWindow:
             text_width = w - 2 * pad
             y = float(top)
             for sentence in self.card.sentences:
-                mark = len(c.find_all())  # so this sentence can be undone
+                first_item = len(c.find_all())  # so this sentence can be undone
+                first_region = len(self._regions)
                 segments = sentence.furigana or ((sentence.text, ""),)
-                y = self._draw_ruby_text(
+                self._mark()
+                y, boxes = self._draw_ruby_text(
                     segments, pad, y, text_width, max(9, int(12 * scale))
                 )
+                self._region(sentence.text, boxes)
                 if self.options.show_translation:
                     text, language = sentence.translation(self.options.language)
                     if text:
+                        shown = text
                         if language != self.options.language:
                             # Say so rather than quietly showing another
                             # language: not every sentence is translated.
-                            text = f"{text}  [{language}]"
-                        item = c.create_text(
+                            shown = f"{text}  [{language}]"
+                        self._mark()
+                        item = self._text(
                             pad, y + max(1, int(2 * scale)),
-                            text=text, anchor="nw",
+                            text=shown, anchor="nw",
                             fill=pal.ink_soft,
                             font=self.app.fonts.ui(max(7, int(9 * scale))),
                             width=text_width,
                         )
                         y = c.bbox(item)[3]
+                        self._region(text)  # copy the translation, not the marker
                 if y > floor:  # ran off the note: drop this one and stop
-                    for item in c.find_all()[mark:]:
+                    for item in c.find_all()[first_item:]:
                         c.delete(item)
+                    del self._regions[first_region:]
                     break
                 y += gap
 
-        self._draw_footer(w, h, scale, "click to flip back")
+        self._draw_footer(w, h, scale, "double-click to flip back")
