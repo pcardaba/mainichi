@@ -234,6 +234,44 @@ class TestSelection(unittest.TestCase):
         self.postit.copy_selection()
         self.assertEqual(self.postit.win.clipboard_get(), self.postit._regions[first].text)
 
+    def test_traces_animate_stroke_by_stroke(self):
+        """The animation walks the strokes in order and then stops."""
+        self.postit.card = self.app.provider.next_card("N5", "語")
+        self.postit.play_traces()
+        self.assertTrue(self.postit.tracing)
+        self.assertEqual(self.postit.face, "recto", "the kanji is on the front")
+        total = len(self.postit._trace["strokes"])
+        self.assertEqual(total, 14, "語 is written with fourteen strokes")
+
+        seen = []
+        for _ in range(4000):  # drive the frames directly, without waiting
+            if not self.postit.tracing:
+                break
+            seen.append(self.postit._trace["index"])
+            self.postit._trace_tick()
+        self.assertFalse(self.postit.tracing, "the animation should finish")
+        self.assertEqual(seen, sorted(seen), "strokes must be drawn in order")
+        self.assertEqual(max(seen), total - 1, "every stroke should be drawn")
+
+    def test_traces_from_the_back_flips_to_the_front(self):
+        self.postit.face = "verso"
+        self.postit.play_traces()
+        self.assertEqual(self.postit.face, "recto")
+
+    def test_redraw_cancels_a_running_animation(self):
+        self.postit.play_traces()
+        self.assertTrue(self.postit.tracing)
+        self.postit.redraw()
+        self.assertFalse(self.postit.tracing)
+        self.assertIsNone(self.postit._trace_job)
+
+    def test_traces_without_stroke_data_do_not_crash(self):
+        from mainichi.content import KanjiCard
+
+        self.postit.card = KanjiCard(kanji="A", level="N5")  # no KanjiVG entry
+        self.postit.play_traces()
+        self.assertFalse(self.postit.tracing)
+
     def test_copy_with_nothing_selected_is_harmless(self):
         self.postit.win.clipboard_clear()
         self.postit.win.clipboard_append("untouched")

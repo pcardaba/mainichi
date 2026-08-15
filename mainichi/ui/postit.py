@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 from mainichi.config import LANGUAGES, MIN_SIZE, VERSO_MODES, PostItOptions
 from mainichi.content import KanjiCard
+from mainichi.strokes import PEN_WIDTH, VIEWBOX
 from mainichi.ui.theme import PALETTES, get_palette
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -77,6 +78,11 @@ class PostItWindow:
         self._selection: set[int] = set()
         self._select_anchor: int | None = None
         self._items: list[int] = []  # items drawn since the last region mark
+
+        # Stroke order animation.
+        self._trace: dict | None = None
+        self._trace_job: str | None = None
+        self._kanji_item: int | None = None
 
         self.win = tk.Toplevel(app.root)
         self.win.withdraw()
@@ -171,7 +177,14 @@ class PostItWindow:
         # Escape only ever dismisses the context menu. It must not close the
         # note: an unposted menu would otherwise take the whole post-it away.
         w.bind("<Escape>", self._dismiss_menu)
+        # However the note goes away, a pending animation frame must not fire
+        # afterwards: Tk complains loudly about the stale callback.
+        w.bind("<Destroy>", self._on_destroy)
         w.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self.win:
+            self._stop_traces()
 
     def _build_menu(self) -> None:
         """Right-click menu. Items with no engine behind them yet are disabled."""
@@ -183,7 +196,7 @@ class PostItWindow:
 
         m = tk.Menu(self.win, tearoff=0)
         m.add_checkbutton(label="Always on top", variable=self._var_on_top, command=self._toggle_on_top)
-        m.add_command(label="Traces", state="disabled")  # stroke animation, later
+        m.add_command(label="Traces", command=self.play_traces)
         m.add_checkbutton(label="Furigana", variable=self._var_furigana, command=self._toggle_furigana)
         m.add_checkbutton(label="Translation", variable=self._var_translation, command=self._toggle_translation)
         m.add_separator()
@@ -442,8 +455,132 @@ class PostItWindow:
             pass
 
     def close(self) -> None:
+        self._stop_traces()
         self.app.forget_postit(self)
         self.win.destroy()
+
+    # ------------------------------------------------------- stroke animation
+
+    TRACE_TICK_MS = 20
+    TRACE_POINTS_PER_TICK = 1.3  # how fast the brush moves along a stroke
+    TRACE_PAUSE_TICKS = 7  # a beat between one stroke and the next
+
+    def _kanji_box(self, w: int, h: int) -> tuple[int, int, int, int]:
+        """Where the big kanji is drawn on the recto."""
+        pad = max(8, int(w * 0.05))
+        return pad, int(h * 0.12), w - pad, int(h * 0.56)
+
+    def play_traces(self) -> None:
+        """Write the kanji out stroke by stroke, in the proper order."""
+        self._stop_traces()
+        self.face = RECTO  # the kanji lives on the front
+        self.redraw()
+
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        strokes = (
+            self.app.strokes.strokes(self.card.kanji)
+            if self.card.kanji and self.app.strokes.available
+            else []
+        )
+        if not strokes:
+            self._draw_footer(
+                w, h, min(w / _BASE_W, h / _BASE_H), "no stroke data for this kanji"
+            )
+            return
+
+        # Fit KanjiVG's square box into the space the kanji occupies.
+        x0, y0, x1, y1 = self._kanji_box(w, h)
+        size = min(x1 - x0, y1 - y0)
+        left = (x0 + x1) / 2 - size / 2
+        top = (y0 + y1) / 2 - size / 2
+        scale = size / VIEWBOX
+        placed = [
+            [(left + px * scale, top + py * scale) for px, py in stroke]
+            for stroke in strokes
+        ]
+        width = max(2, round(PEN_WIDTH * scale))
+
+        if self._kanji_item is not None:
+            self.canvas.delete(self._kanji_item)  # the animation replaces it
+            self._kanji_item = None
+
+        # The finished shape, faint, so the stroke being drawn has a target.
+        for stroke in placed:
+            if len(stroke) >= 2:
+                self.canvas.create_line(
+                    *[c for point in stroke for c in point],
+                    fill=self.palette.guide, width=width,
+                    capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True,
+                )
+
+        self._trace = {
+            "strokes": placed,
+            "index": 0,
+            "progress": 0.0,
+            "item": None,
+            "pause": 0,
+            "width": width,
+        }
+        self._trace_job = self.win.after(self.TRACE_TICK_MS, self._trace_tick)
+
+    def _trace_tick(self) -> None:
+        """One frame of the writing animation."""
+        # Drop the handle of the frame that just fired, so that calling this
+        # directly (as the tests do) cannot leave orphaned frames queued.
+        if self._trace_job is not None:
+            try:
+                self.win.after_cancel(self._trace_job)
+            except tk.TclError:  # pragma: no cover - already fired
+                pass
+            self._trace_job = None
+
+        state = self._trace
+        if state is None:
+            return
+        if state["pause"] > 0:
+            state["pause"] -= 1
+            self._trace_job = self.win.after(self.TRACE_TICK_MS, self._trace_tick)
+            return
+
+        stroke = state["strokes"][state["index"]]
+        state["progress"] += self.TRACE_POINTS_PER_TICK
+        drawn = min(len(stroke), max(2, int(state["progress"])))
+        coords = [c for point in stroke[:drawn] for c in point]
+
+        if len(coords) >= 4:
+            if state["item"] is None:
+                state["item"] = self.canvas.create_line(
+                    *coords,
+                    fill=self.palette.ink, width=state["width"],
+                    capstyle=tk.ROUND, joinstyle=tk.ROUND, smooth=True,
+                )
+            else:
+                self.canvas.coords(state["item"], *coords)
+
+        if drawn >= len(stroke):
+            state["index"] += 1
+            state["progress"] = 0.0
+            state["item"] = None
+            state["pause"] = self.TRACE_PAUSE_TICKS
+            if state["index"] >= len(state["strokes"]):
+                self._trace = None  # done: leave the finished kanji on screen
+                self._trace_job = None
+                return
+        self._trace_job = self.win.after(self.TRACE_TICK_MS, self._trace_tick)
+
+    def _stop_traces(self) -> None:
+        """Cancel a running animation, leaving the canvas to be redrawn."""
+        if self._trace_job is not None:
+            try:
+                self.win.after_cancel(self._trace_job)
+            except tk.TclError:  # pragma: no cover - window already gone
+                pass
+        self._trace_job = None
+        self._trace = None
+
+    @property
+    def tracing(self) -> bool:
+        return self._trace is not None
 
     # -------------------------------------------------------------- selection
 
@@ -535,10 +672,15 @@ class PostItWindow:
         if w <= 1 or h <= 1:  # not mapped yet
             return
 
+        # A redraw clears the canvas; an animation still running would then
+        # be moving items that no longer exist.
+        self._stop_traces()
+
         pal = self.palette
         c.configure(bg=pal.paper)
         scale = min(w / _BASE_W, h / _BASE_H)
 
+        self._kanji_item = None
         self._regions = []
         self._items = []
         self._draw_paper(w, h)
@@ -616,12 +758,12 @@ class PostItWindow:
         pad = max(8, int(w * 0.05))
         self._draw_header(w, h, scale, "recto")
 
-        kanji_box = (pad, int(h * 0.12), w - pad, int(h * 0.56))
+        kanji_box = self._kanji_box(w, h)
         if self.card.is_placeholder:
             self._zone(*kanji_box, "kanji", scale)
         else:
             self._mark()
-            self._text(
+            self._kanji_item = self._text(
                 w / 2,
                 (kanji_box[1] + kanji_box[3]) / 2,
                 text=self.card.kanji,

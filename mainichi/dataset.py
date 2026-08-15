@@ -12,6 +12,7 @@ import json
 import random
 from pathlib import Path
 
+from mainichi.config import LEVELS
 from mainichi.content import KanjiCard, Sentence, Word
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -38,8 +39,16 @@ class BundledProvider:
     # ------------------------------------------------------------- loading
 
     def available(self) -> list[str]:
-        """Levels that actually have a data file."""
-        return sorted(p.name.split(".")[0] for p in self.data_dir.glob("*.json.gz"))
+        """Levels that actually have a data file.
+
+        The directory holds other things too (the stroke outlines), so only
+        names that are JLPT levels count.
+        """
+        return sorted(
+            p.name.split(".")[0]
+            for p in self.data_dir.glob("*.json.gz")
+            if p.name.split(".")[0] in LEVELS
+        )
 
     def load(self, level: str) -> list[dict]:
         """Records for one level, read from disk at most once."""

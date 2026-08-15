@@ -8,6 +8,7 @@ import tkinter as tk
 from mainichi.config import AppConfig
 from mainichi.content import CardProvider, PlaceholderProvider
 from mainichi.dataset import BundledProvider, DataNotBuilt
+from mainichi.strokes import StrokeLibrary
 from mainichi.ui.fonts import FontBook
 from mainichi.ui.postit import PostItWindow
 
@@ -34,6 +35,9 @@ class MainichiApp:
                 "          install e.g. 'fonts-noto-cjk' (Linux) or use Yu Gothic (Windows).",
                 file=sys.stderr,
             )
+
+        # Shared by every note: the file is read on the first animation only.
+        self.strokes = StrokeLibrary()
 
         self.postits: list[PostItWindow] = []
         self._spawned = 0

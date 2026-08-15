@@ -59,6 +59,11 @@ SOURCES = {
     "fra_sentences.tsv.bz2": "https://downloads.tatoeba.org/exports/per_language/fra/fra_sentences.tsv.bz2",
     "spa_sentences.tsv.bz2": "https://downloads.tatoeba.org/exports/per_language/spa/spa_sentences.tsv.bz2",
     "links.tar.bz2": "https://downloads.tatoeba.org/exports/links.tar.bz2",
+    # Stroke order outlines, for the writing animation.
+    "kanjivg.xml.gz": (
+        "https://github.com/KanjiVG/kanjivg/releases/download/"
+        "r20250816/kanjivg-20250816.xml.gz"
+    ),
 }
 
 LANGUAGES = ("en", "fr", "es")
@@ -718,6 +723,45 @@ def pick_words(
     return words
 
 
+_SVG_NUMBER = re.compile(r"-?\d*\.?\d+")
+
+
+def load_strokes(path: Path, wanted: set[str]) -> dict[str, list[str]]:
+    """Stroke outlines per kanji, in KanjiVG's 109x109 box.
+
+    The SVG path strings are kept as they are rather than flattened into
+    point lists: they are smaller that way, and the application can then
+    flatten them to whatever size the note is being drawn at.
+    """
+    strokes: dict[str, list[str]] = {}
+    with gzip.open(path, "rb") as handle:
+        for _event, element in ET.iterparse(handle, events=("end",)):
+            # Note: only kanji elements are cleared. Clearing the others
+            # would throw away the paths before they can be read.
+            if not element.tag.endswith("kanji"):
+                continue
+            try:
+                char = chr(int(element.get("id", "").split("_")[-1], 16))
+            except ValueError:
+                element.clear()
+                continue
+            if char in wanted:
+                paths = [
+                    _shrink(node.get("d", ""))
+                    for node in element.iter()
+                    if node.tag.endswith("path") and node.get("d")
+                ]
+                if paths:
+                    strokes[char] = paths
+            element.clear()
+    return strokes
+
+
+def _shrink(path: str) -> str:
+    """Round the coordinates: a hundredth of a 109 unit box is invisible."""
+    return _SVG_NUMBER.sub(lambda m: f"{float(m.group()):.1f}".rstrip("0").rstrip("."), path)
+
+
 EXTRA_VOCABULARY = 10  # more than fits on a note, so resizing shows more
 
 
@@ -816,7 +860,28 @@ def build(levels: list[str], cache_dir: Path, out_dir: Path) -> dict[str, Stats]
         )
     print(f"  {sum(len(v) for v in extra.values())} extra words")
 
+    print("reading stroke order outlines (KanjiVG) ...", flush=True)
+    strokes = load_strokes(paths["kanjivg.xml.gz"], set(targets))
+    print(f"  {len(strokes)} of {len(targets)} kanji have stroke data")
+
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Stroke outlines live in their own file: they are only read when the
+    # writing animation is played, and they come from a different source.
+    stroke_file = out_dir / "strokes.json.gz"
+    with gzip.open(stroke_file, "wt", encoding="utf-8") as out:
+        json.dump(
+            {
+                "viewbox": 109,
+                "source": "KanjiVG (CC BY-SA 3.0)",
+                "kanji": strokes,
+            },
+            out,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    print(f"  wrote {stroke_file.name}  {stroke_file.stat().st_size / 1024:.1f} KiB")
+
     for level in levels:
         records = []
         stat = stats[level]

@@ -4,8 +4,8 @@ A kanji a day, stuck on your desktop like a post-it.
 
 > **Status:** the window, the interaction model and the kanji data are in
 > place. 2211 kanji across the five JLPT levels, each with common words per
-> reading, furigana, and example sentences. Text can be selected and copied.
-> Stroke order animation is not implemented yet.
+> reading, furigana, example sentences, stroke order animation, and text
+> that can be selected and copied.
 
 ## Requirements
 
@@ -90,7 +90,7 @@ Word meanings come from the full JMdict rather than its English-only export.
 Coverage is deliberately best where beginners are: among words of comparable
 usefulness the build prefers the ones that are translated.
 
-The whole set is 1.6 MiB, gzipped JSON, one file per level, loaded lazily:
+Cards and sentences come to 1.6 MiB, plus 545 KiB of stroke outlines. Each is, gzipped JSON, one file per level, loaded lazily:
 showing an N5 note never reads the 1232 kanji of N1. **The application never
 uses the network.**
 
@@ -115,6 +115,7 @@ mainichi/
 ├── config.py       AppConfig (launch) + PostItOptions (per-note, menu toggles)
 ├── content.py      KanjiCard / Word / Sentence + the CardProvider protocol
 ├── dataset.py      BundledProvider: reads mainichi/data, deals shuffled decks
+├── strokes.py      KanjiVG outlines: SVG paths flattened into polylines
 ├── data/           N5.json.gz ... N1.json.gz, generated, committed
 ├── app.py          MainichiApp: owns the Tk root and every open post-it
 └── ui/
@@ -129,6 +130,17 @@ The presentation layer only ever reads a `KanjiCard` and asks a
 `CardProvider` for the next one, so swapping the bundled data for an online
 lookup would not touch `ui/`.
 
+## Stroke order
+
+**Traces** in the context menu writes the kanji out stroke by stroke, in the
+proper order, over a faint outline of the finished character. The outlines
+come from KanjiVG and cover all 2211 kanji. Any click, flip or resize stops
+the animation; choosing Traces again replays it.
+
+The outlines live in their own file (`data/strokes.json.gz`, 545 KiB) that is
+only read the first time an animation is played, so notes that never use it
+pay nothing.
+
 ## Copying text
 
 Click a word or a sentence to select it, drag to take in several, then
@@ -139,7 +151,6 @@ before closing the last note.
 
 ## Not implemented yet
 
-* **Traces**: stroke order animation (menu entry present but disabled)
 * persisting position, size, colour and options between runs
 * 20 of the N1 kanji are used almost only in names and have no common word;
   those notes show the readings instead

@@ -21,7 +21,12 @@ the source code, not to the contents of `mainichi/data/`.
 | [JmdictFurigana](https://github.com/Doublevil/JmdictFurigana) | which kanji in a word takes which reading | CC BY-SA (as JMdict); tool itself MIT |
 | [Tanaka Corpus](https://www.edrdg.org/wiki/index.php/Tanaka_Corpus) | example sentences, English translations, the word-by-word annotation the sentence furigana is built from | CC BY 2.0 FR |
 | [Tatoeba](https://tatoeba.org/) | French and Spanish translations of those sentences | CC BY 2.0 FR |
+| [KanjiVG](http://kanjivg.tagaini.net) | stroke order outlines, for the writing animation | CC BY-SA 3.0, Ulrich Apel |
 | [kanji-data](https://github.com/davidluzgouveia/kanji-data) | JLPT level of each kanji, readings | MIT; data from KANJIDIC and Jonathan Waller's JLPT lists |
+
+This product uses **KanjiVG** (http://kanjivg.tagaini.net), copyright
+(C) 2009-2013 Ulrich Apel, distributed under CC BY-SA 3.0. The stroke
+outlines in `mainichi/data/strokes.json.gz` are derived from it.
 
 KANJIDIC2, JMdict and the Tanaka Corpus are the property of the
 [Electronic Dictionary Research and Development Group](https://www.edrdg.org/),
