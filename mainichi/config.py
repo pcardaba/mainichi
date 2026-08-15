@@ -43,6 +43,7 @@ class PostItOptions:
     show_translation: bool = True
     language: str = DEFAULT_LANGUAGE
     verso: str = DEFAULT_VERSO
+    hover_bubble: bool = True
 
     def copy(self) -> "PostItOptions":
         return replace(self)

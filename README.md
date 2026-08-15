@@ -41,6 +41,7 @@ Launch it several times for several post-its, or press `Ctrl+N` on one.
 | double click | flip between the front (kanji + words) and the back (meaning + vocabulary or sentences) |
 | drag the blank paper | move the note around the desktop |
 | drag the folded corner | resize the note |
+| hover over a word or sentence | a bubble shows it larger, with readable furigana |
 | right click | context menu (on-top, furigana, translation, language, back of the note, colour, next, ...) |
 | left click outside the menu, or `Esc` | close the context menu |
 | `Ctrl+C` / `Ctrl+A` | copy the selection / select everything on this side |
@@ -120,6 +121,8 @@ mainichi/
 ├── app.py          MainichiApp: owns the Tk root and every open post-it
 └── ui/
     ├── postit.py   PostItWindow: borderless window, canvas drawing, input
+    ├── ruby.py     furigana layout and line breaking, shared by note and bubble
+    ├── bubble.py   the hover popup that magnifies a word
     ├── theme.py    Palette + the six post-it colours
     └── fonts.py    finds a Japanese capable font family per platform
 tools/
@@ -129,6 +132,18 @@ tools/
 The presentation layer only ever reads a `KanjiCard` and asks a
 `CardProvider` for the next one, so swapping the bundled data for an online
 lookup would not touch `ui/`.
+
+## Reading the furigana on a small note
+
+A post-it parked in a corner of the screen is often too small for the
+furigana over its example words. Rest the pointer on a word (or a sentence)
+and after a moment a bubble pops up beside it showing that text larger, with
+the reading at a comfortable size — no need to resize the note.
+
+The bubble is a window of its own, so it is not clipped by a small note, and
+it flips to the other side of the pointer rather than running off the screen.
+It goes away as soon as the pointer moves off the text or you click. Turn it
+off with **Bubble on hover** in the context menu.
 
 ## Stroke order
 

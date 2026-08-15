@@ -272,6 +272,79 @@ class TestSelection(unittest.TestCase):
         self.postit.play_traces()
         self.assertFalse(self.postit.tracing)
 
+    def test_only_japanese_text_gets_a_bubble(self):
+        """Words and sentences have readings worth magnifying; glosses do not."""
+        with_furigana = [r.text for r in self.postit._regions if r.furigana]
+        self.assertTrue(with_furigana)
+        for region in self.postit._regions:
+            if region.furigana:
+                rebuilt = "".join(text for text, _rt in region.furigana)
+                self.assertEqual(rebuilt, region.text)
+
+    def _first_furigana_region(self):
+        return next(i for i, r in enumerate(self.postit._regions) if r.furigana)
+
+    def test_hovering_a_word_schedules_then_shows_the_bubble(self):
+        index = self._first_furigana_region()
+        self.postit._hover_region(index, 300, 300)
+        self.assertIsNotNone(self.postit._hover_job, "should wait before popping up")
+        self.assertFalse(self.postit._bubble_shown(), "not immediately")
+        self.postit._show_bubble()  # what the timer would do
+        self.postit.win.update()
+        self.assertTrue(self.postit._bubble_shown())
+
+    def test_bubble_shows_the_same_reading_as_the_note(self):
+        index = self._first_furigana_region()
+        self.postit._hover_region(index, 300, 300)
+        self.postit._show_bubble()
+        self.postit.win.update()
+        readings = [rt for _t, rt in self.postit._regions[index].furigana if rt]
+        drawn = [
+            self.postit._bubble.canvas.itemcget(item, "text")
+            for item in self.postit._bubble.canvas.find_all()
+            if self.postit._bubble.canvas.type(item) == "text"
+        ]
+        for reading in readings:
+            self.assertIn(reading, drawn)
+
+    def test_moving_off_the_word_hides_the_bubble(self):
+        index = self._first_furigana_region()
+        self.postit._hover_region(index, 300, 300)
+        self.postit._show_bubble()
+        self.postit.win.update()
+        self.assertTrue(self.postit._bubble_shown())
+        self.postit._hover_region(None, 900, 900)
+        self.postit.win.update()
+        self.assertFalse(self.postit._bubble_shown())
+
+    def test_bubble_can_be_switched_off(self):
+        self.postit._var_bubble.set(False)
+        self.postit._toggle_bubble()
+        self.postit._hover_region(self._first_furigana_region(), 300, 300)
+        self.assertIsNone(self.postit._hover_job)
+        self.assertFalse(self.postit._bubble_shown())
+
+    def test_bubble_stays_on_screen(self):
+        index = self._first_furigana_region()
+        screen_w = self.postit.win.winfo_screenwidth()
+        screen_h = self.postit.win.winfo_screenheight()
+        self.postit._hover_region(index, screen_w - 5, screen_h - 5)
+        self.postit._show_bubble()
+        self.postit.win.update()
+        window = self.postit._bubble.win
+        self.assertLessEqual(window.winfo_x() + window.winfo_width(), screen_w)
+        self.assertLessEqual(window.winfo_y() + window.winfo_height(), screen_h)
+        self.assertGreaterEqual(window.winfo_x(), 0)
+
+    def test_a_click_hides_the_bubble(self):
+        index = self._first_furigana_region()
+        self.postit._hover_region(index, 300, 300)
+        self.postit._show_bubble()
+        self.postit.win.update()
+        x0, y0, x1, y1 = self.postit._regions[index].boxes[0]
+        self._press(int((x0 + x1) / 2), int((y0 + y1) / 2))
+        self.assertFalse(self.postit._bubble_shown())
+
     def test_copy_with_nothing_selected_is_harmless(self):
         self.postit.win.clipboard_clear()
         self.postit.win.clipboard_append("untouched")

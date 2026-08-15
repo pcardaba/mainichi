@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 from mainichi.config import LANGUAGES, MIN_SIZE, VERSO_MODES, PostItOptions
 from mainichi.content import KanjiCard
 from mainichi.strokes import PEN_WIDTH, VIEWBOX
+from mainichi.ui import ruby
+from mainichi.ui.bubble import Bubble
 from mainichi.ui.theme import PALETTES, get_palette
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -45,6 +47,8 @@ class _Region:
 
     text: str
     boxes: list[tuple[float, float, float, float]]  # one per line of text
+    # Set for text that has readings, which is what the hover bubble shows.
+    furigana: tuple[tuple[str, str], ...] = ()
 
     def hit(self, x: float, y: float) -> bool:
         return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in self.boxes)
@@ -78,6 +82,12 @@ class PostItWindow:
         self._selection: set[int] = set()
         self._select_anchor: int | None = None
         self._items: list[int] = []  # items drawn since the last region mark
+
+        # Hover bubble: magnifies the word the pointer rests on.
+        self._bubble: Bubble | None = None
+        self._hovered: int | None = None
+        self._hover_job: str | None = None
+        self._hover_point: tuple[int, int] = (0, 0)
 
         # Stroke order animation.
         self._trace: dict | None = None
@@ -164,6 +174,7 @@ class PostItWindow:
         c.bind("<Button-3>", self._on_context_menu)
         c.bind("<Configure>", lambda _e: self.redraw())
         c.bind("<Motion>", self._on_hover)
+        c.bind("<Leave>", self._leave)
 
         w = self.win
         w.bind("<space>", lambda _e: self.flip())
@@ -185,6 +196,10 @@ class PostItWindow:
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is self.win:
             self._stop_traces()
+            self._cancel_hover()
+            if self._bubble is not None:
+                self._bubble.destroy()
+                self._bubble = None
 
     def _build_menu(self) -> None:
         """Right-click menu. Items with no engine behind them yet are disabled."""
@@ -193,12 +208,16 @@ class PostItWindow:
         self._var_translation = tk.BooleanVar(self.win, self.options.show_translation)
         self._var_language = tk.StringVar(self.win, self.options.language)
         self._var_verso = tk.StringVar(self.win, self.options.verso)
+        self._var_bubble = tk.BooleanVar(self.win, self.options.hover_bubble)
 
         m = tk.Menu(self.win, tearoff=0)
         m.add_checkbutton(label="Always on top", variable=self._var_on_top, command=self._toggle_on_top)
         m.add_command(label="Traces", command=self.play_traces)
         m.add_checkbutton(label="Furigana", variable=self._var_furigana, command=self._toggle_furigana)
         m.add_checkbutton(label="Translation", variable=self._var_translation, command=self._toggle_translation)
+        m.add_checkbutton(
+            label="Bubble on hover", variable=self._var_bubble, command=self._toggle_bubble
+        )
         m.add_separator()
         m.add_command(label="Copy", accelerator="Ctrl+C", command=self.copy_selection)
         m.add_command(label="Select all", accelerator="Ctrl+A", command=self.select_all)
@@ -260,12 +279,73 @@ class PostItWindow:
         return x >= w - fold and y >= h - fold
 
     def _on_hover(self, event: tk.Event) -> None:
+        over = self._region_at(event.x, event.y)
         if not self.app.config.decorated and self._in_fold(event.x, event.y):
             self.canvas.configure(cursor="bottom_right_corner")
-        elif self._region_at(event.x, event.y) is not None:
+            over = None
+        elif over is not None:
             self.canvas.configure(cursor="xterm")  # this text can be selected
         else:
             self.canvas.configure(cursor="" if self.app.config.decorated else "hand2")
+        self._hover_region(over, event.x_root, event.y_root)
+
+    # ---------------------------------------------------------- hover bubble
+
+    HOVER_DELAY_MS = 450  # resting on a word, not just passing over it
+
+    def _hover_region(self, index: int | None, x_root: int, y_root: int) -> None:
+        """Track what the pointer rests on, and pop the bubble when it stays.
+
+        Only text that carries readings is worth magnifying: the point is to
+        read the furigana on a note too small to show it clearly.
+        """
+        if not self.options.hover_bubble:
+            index = None
+        elif index is not None and not self._regions[index].furigana:
+            index = None
+
+        if index != self._hovered:
+            self._hovered = index
+            self._cancel_hover()
+            self._hide_bubble()
+        self._hover_point = (x_root, y_root)
+        if index is not None and self._hover_job is None and not self._bubble_shown():
+            self._hover_job = self.win.after(self.HOVER_DELAY_MS, self._show_bubble)
+
+    def _cancel_hover(self) -> None:
+        if self._hover_job is not None:
+            try:
+                self.win.after_cancel(self._hover_job)
+            except tk.TclError:  # pragma: no cover - window already gone
+                pass
+            self._hover_job = None
+
+    def _bubble_shown(self) -> bool:
+        return self._bubble is not None and self._bubble.visible
+
+    def _show_bubble(self) -> None:
+        """Pop the magnified word next to the pointer."""
+        self._hover_job = None
+        index = self._hovered
+        if index is None or index >= len(self._regions):
+            return
+        region = self._regions[index]
+        if not region.furigana:
+            return
+        if self._bubble is None:
+            self._bubble = Bubble(self.win, self.app.fonts)
+        x, y = self._hover_point
+        self._bubble.show(region.furigana, self.palette, x, y)
+
+    def _hide_bubble(self) -> None:
+        if self._bubble is not None:
+            self._bubble.hide()
+
+    def _leave(self, _event: tk.Event | None = None) -> None:
+        """The pointer left the paper: nothing is hovered any more."""
+        self._hovered = None
+        self._cancel_hover()
+        self._hide_bubble()
 
     def _on_double_click(self, _event: tk.Event) -> str:
         """Flip the note.
@@ -288,6 +368,8 @@ class PostItWindow:
         if self._menu_is_open():
             self._dismiss_menu()
             return "break"
+        self._cancel_hover()
+        self._hide_bubble()
         # Clicking a note brings it forward, which matters once it is no
         # longer pinned on top and something else is covering it.
         self.win.lift()
@@ -419,6 +501,12 @@ class PostItWindow:
         self.options.show_translation = self._var_translation.get()
         self.redraw()
 
+    def _toggle_bubble(self) -> None:
+        self.options.hover_bubble = self._var_bubble.get()
+        if not self.options.hover_bubble:
+            self._cancel_hover()
+            self._hide_bubble()
+
     def _change_verso(self) -> None:
         """Switch the back of the note between sentences and vocabulary."""
         self.options.verso = self._var_verso.get()
@@ -456,6 +544,10 @@ class PostItWindow:
 
     def close(self) -> None:
         self._stop_traces()
+        self._cancel_hover()
+        if self._bubble is not None:
+            self._bubble.destroy()
+            self._bubble = None
         self.app.forget_postit(self)
         self.win.destroy()
 
@@ -594,7 +686,12 @@ class PostItWindow:
         """Start collecting the items that will make up the next region."""
         self._items = []
 
-    def _region(self, text: str, boxes: list[tuple[float, float, float, float]] | None = None) -> None:
+    def _region(
+        self,
+        text: str,
+        boxes: list[tuple[float, float, float, float]] | None = None,
+        furigana: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         """Close the current region, covering everything drawn since _mark."""
         if not text:
             self._items = []
@@ -611,7 +708,7 @@ class PostItWindow:
                 max(b[2] for b in spans),
                 max(b[3] for b in spans),
             )]
-        self._regions.append(_Region(text=text, boxes=boxes))
+        self._regions.append(_Region(text=text, boxes=boxes, furigana=tuple(furigana)))
         self._items = []
 
     def _draw_selection(self) -> None:
@@ -675,6 +772,8 @@ class PostItWindow:
         # A redraw clears the canvas; an animation still running would then
         # be moving items that no longer exist.
         self._stop_traces()
+        self._hovered = None
+        self._cancel_hover()
 
         pal = self.palette
         c.configure(bg=pal.paper)
@@ -853,7 +952,7 @@ class PostItWindow:
                 fill=pal.ink, font=fonts.jp(size),
             )
             x += width
-        self._region(word.text)
+        self._region(word.text, furigana=segments)
 
         # The meaning, as much of it as the slot can take.
         gloss, language = word.meaning(self.options.language)
@@ -890,46 +989,21 @@ class PostItWindow:
         individual characters, so the line breaking is done here: every
         annotated group is one unbreakable cell, plain kana break anywhere.
         """
-        c = self.canvas
         pal = self.palette
-        fonts = self.app.fonts
-        main_spec = fonts.jp(size)
-        ruby_spec = fonts.jp(max(6, int(size * 0.52)))
-        main = fonts.measurable(main_spec)
-        ruby = fonts.measurable(ruby_spec)
-
-        show_ruby = self.options.show_furigana and any(rt for _, rt in segments)
-        ruby_height = ruby.metrics("linespace") if show_ruby else 0
-        line_height = ruby_height + main.metrics("linespace")
-
-        # An annotated group stays whole; unannotated runs break per character
-        # so that a long tail of kana still wraps.
-        cells: list[tuple[str, str, float]] = []
-        for text, rt in segments:
-            if rt and show_ruby:
-                # The reading is often wider than the character it sits on.
-                cells.append((text, rt, max(main.measure(text), ruby.measure(rt) + 2)))
-            elif rt:
-                cells.append((text, "", main.measure(text)))
-            else:
-                for char in text:
-                    cells.append((char, "", main.measure(char)))
-
-        x, y = left, top
-        boxes: list[tuple[float, float, float, float]] = []
-        line_start = left
-        for text, rt, width in cells:
-            if x + width > left + max_width and x > left and text[0] not in self._NO_LINE_START:
-                boxes.append((line_start, y, x, y + line_height))
-                x = left
-                y += line_height
-            if rt:
-                self._text(x + width / 2, y, text=rt, anchor="n", fill=pal.ink_soft, font=ruby_spec)
-            self._text(x + width / 2, y + ruby_height, text=text, anchor="n", fill=pal.ink, font=main_spec)
-            x += width
-        if x > line_start:
-            boxes.append((line_start, y, x, y + line_height))
-        return y + line_height, boxes
+        layout = ruby.draw(
+            self.canvas,
+            self.app.fonts,
+            segments,
+            left,
+            top,
+            max_width,
+            size,
+            ink=pal.ink,
+            ink_soft=pal.ink_soft,
+            show_ruby=self.options.show_furigana,
+        )
+        self._items.extend(layout.items)  # so the caller can make it a region
+        return layout.bottom, layout.boxes
 
     def _draw_vocabulary(
         self, w: int, h: int, scale: float, pad: int, top: int, floor: int, gap: int
@@ -966,7 +1040,7 @@ class PostItWindow:
                 word.furigana or ((word.text, word.reading),),
                 pad, y, word_width, max(9, int(12 * scale)),
             )
-            self._region(word.text, boxes)
+            self._region(word.text, boxes, furigana=word.furigana or ((word.text, word.reading),))
 
             bottom = word_bottom
             meaning, language = word.meaning(self.options.language)
@@ -1061,7 +1135,7 @@ class PostItWindow:
                 y, boxes = self._draw_ruby_text(
                     segments, pad, y, text_width, max(9, int(12 * scale))
                 )
-                self._region(sentence.text, boxes)
+                self._region(sentence.text, boxes, furigana=segments)
                 if self.options.show_translation:
                     text, language = sentence.translation(self.options.language)
                     if text:
