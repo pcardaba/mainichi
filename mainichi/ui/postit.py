@@ -14,6 +14,7 @@ Interaction
 
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from typing import TYPE_CHECKING
 
@@ -60,11 +61,11 @@ class PostItWindow:
         self.win.geometry(f"{w}x{h}+{x}+{y}")
         self.win.minsize(self.MIN_W, self.MIN_H)
 
+        self._unmanaged = False  # True when the window manager ignores us
         if app.config.decorated:
             self.win.resizable(True, True)
         else:
-            # Borderless: the paper is the whole window.
-            self.win.overrideredirect(True)
+            self._make_borderless()
 
         self.canvas = tk.Canvas(
             self.win,
@@ -81,6 +82,30 @@ class PostItWindow:
 
         self.win.deiconify()
         self.redraw()
+
+    def _make_borderless(self) -> None:
+        """Drop the title bar, while staying under the window manager.
+
+        The obvious way, ``overrideredirect(True)``, takes the window out of
+        the window manager's hands entirely. On X11 that also puts it above
+        every ordinary window permanently, and no ``-topmost`` setting can
+        bring it back down: "always on top" could be switched off in the menu
+        but nothing happened.
+
+        A splash window is undecorated *and* managed, so the window manager
+        stacks it like any other window and honours the request. Windows and
+        macOS have no such window type, but there ``overrideredirect`` does
+        not break stacking, so it is used as before.
+        """
+        if sys.platform.startswith("win") or sys.platform == "darwin":
+            self.win.overrideredirect(True)
+            self._unmanaged = True
+            return
+        try:
+            self.win.attributes("-type", "splash")
+        except tk.TclError:  # pragma: no cover - very old or unusual X11 Tk
+            self.win.overrideredirect(True)
+            self._unmanaged = True
 
     # ------------------------------------------------------------------ state
 
@@ -185,6 +210,9 @@ class PostItWindow:
         if self._menu_is_open():
             self._dismiss_menu()
             return "break"
+        # Clicking a note brings it forward, which matters once it is no
+        # longer pinned on top and something else is covering it.
+        self.win.lift()
         self.win.focus_force()
         self._moved = False
         w, h, x, y = self.geometry_tuple()
@@ -280,10 +308,10 @@ class PostItWindow:
     def _apply_topmost(self) -> None:
         on_top = self.options.always_on_top
         try:
-            if self.win.winfo_viewable() and self.win.overrideredirect():
-                # X11 silently ignores a -topmost change on a borderless
-                # window that is already mapped, so unmap it around the
-                # change. The geometry is restored right after.
+            if self.win.winfo_viewable() and self._unmanaged:
+                # An unmanaged window ignores a -topmost change once it is
+                # mapped, so unmap it around the change. The geometry is
+                # restored right after.
                 geometry = self.win.geometry()
                 self.win.withdraw()
                 self.win.attributes("-topmost", on_top)
