@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Upstream dictionary data (JMdict / KANJIDIC)
+    url: https://www.edrdg.org/jmdictdb/cgi-bin/edhelp.py
+    about: Wrong readings or meanings usually need correcting at EDRDG, which fixes them for every project using the data.
+  - name: Upstream example sentences (Tatoeba)
+    url: https://tatoeba.org/
+    about: Example sentences and their French and Spanish translations come from Tatoeba and can be corrected there.

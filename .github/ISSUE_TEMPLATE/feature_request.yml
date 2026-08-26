@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest something mainichi should do
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        mainichi is deliberately small: a post-it, a kanji, a right-click
+        menu. Suggestions that keep it that way have the best odds. The
+        README's "Not implemented yet" section lists what is already known
+        to be missing.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: Describe the situation, not just the feature. It often has a simpler answer than the one proposed.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like it to do
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part does this touch
+      options:
+        - The note itself (layout, colours, resizing)
+        - The context menu
+        - Vocabulary, sentences or translations
+        - Stroke order
+        - Command line options
+        - Something else
+    validations:
+      required: false

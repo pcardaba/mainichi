@@ -1,0 +1,72 @@
+name: Bug report
+description: Something in the application misbehaves
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If instead you found a **wrong reading,
+        translation or example sentence**, please use the "Data problem"
+        template — those usually need fixing upstream rather than here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the command you launched it with, if it matters.
+      placeholder: |
+        1. python -m mainichi --level N3
+        2. Double click the note
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "Ubuntu 24.04 / Windows 11 / Fedora 40 with Wayland"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "Output of: python --version"
+      placeholder: "3.12.3"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: display-server
+    attributes:
+      label: Display server (Linux only)
+      description: |
+        `echo $XDG_SESSION_TYPE` will tell you. Borderless windows,
+        always-on-top and the clipboard all behave differently between the
+        two, so this is often the deciding detail.
+      options:
+        - X11
+        - Wayland
+        - "Not applicable (Windows or macOS)"
+        - "Not sure"
+    validations:
+      required: false
+
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Traceback or terminal output
+      description: Paste anything the terminal printed. Automatically formatted as code.
+      render: text
+    validations:
+      required: false

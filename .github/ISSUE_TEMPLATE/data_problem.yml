@@ -1,0 +1,61 @@
+name: Data problem
+description: A wrong reading, meaning, furigana alignment, example sentence or JLPT level
+labels: ["data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The bundled data is generated from open sources (see
+        [ATTRIBUTION.md](../blob/main/ATTRIBUTION.md)), so a wrong reading or
+        translation is usually an upstream issue in JMdict, KANJIDIC or
+        Tatoeba. Reporting it here is still useful — it may be a bug in how
+        `tools/build_data.py` picks or aligns things, and if it is genuinely
+        upstream we can point you at the right place.
+
+        **On JLPT levels specifically:** the JLPT has published no official
+        kanji lists since 2010. mainichi uses Jonathan Waller's widely used
+        reconstruction, so a kanji sitting one level from where your textbook
+        puts it is expected and not a bug.
+
+  - type: input
+    id: kanji
+    attributes:
+      label: Kanji or word
+      placeholder: "日曜日"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is wrong
+      options:
+        - Reading is wrong
+        - Furigana is aligned to the wrong character
+        - Meaning or translation is wrong
+        - Example sentence is wrong or unnatural
+        - Sentence is too hard for the level
+        - Stroke order animation is wrong
+        - JLPT level is wrong
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: detail
+    attributes:
+      label: What it shows and what it should show
+      placeholder: |
+        Shows: にちようにち
+        Should show: にちようび
+    validations:
+      required: true
+
+  - type: input
+    id: where
+    attributes:
+      label: Where it appears
+      description: Front of the note, back (vocabulary or sentences), or the hover bubble. Include the level.
+      placeholder: "Front of the note, N5"
+    validations:
+      required: false

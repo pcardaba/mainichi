@@ -171,6 +171,13 @@ clipboard gets 日本, not にほん, so what you paste elsewhere is the text as
 written. On X11 the clipboard is owned by the running application, so paste
 before closing the last note.
 
+## Contributing
+
+Bug reports, data corrections and focused patches are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to run the tests and regenerate
+the data. Note that a wrong reading or translation usually needs fixing
+upstream in JMdict or Tatoeba rather than here.
+
 ## Not implemented yet
 
 * persisting position, size, colour and options between runs
